@@ -1,0 +1,3 @@
+[submodule "3rd_party/airplane"]
+	path = 3rd_party/airplane
+	url = git@github.com:jkCXf9X4/ssp_airplane.git
