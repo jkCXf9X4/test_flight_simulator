@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<PropertyList>
+  <generic>
+    <output>
+      <line_separator>newline</line_separator>
+      <var_separator>,</var_separator>
+
+      <chunk>
+        <name>stick_pitch_norm</name>
+        <node>/controls/flight/elevator</node>
+        <type>double</type>
+        <format>%0.6f</format>
+      </chunk>
+      <chunk>
+        <name>stick_roll_norm</name>
+        <node>/controls/flight/aileron</node>
+        <type>double</type>
+        <format>%0.6f</format>
+      </chunk>
+      <chunk>
+        <name>rudder_norm</name>
+        <node>/controls/flight/rudder</node>
+        <type>double</type>
+        <format>%0.6f</format>
+      </chunk>
+      <chunk>
+        <name>throttle_norm</name>
+        <node>/controls/engines/current-engine/throttle</node>
+        <type>double</type>
+        <format>%0.6f</format>
+      </chunk>
+    </output>
+  </generic>
+</PropertyList>

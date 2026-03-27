@@ -36,6 +36,24 @@ Where:
 
 The first implementation target is FlightGear `generic` communication rather than native protocol packing, because it keeps the exchanged signals explicit during integration.
 
+## Current FlightGearBridge implementation
+
+`FlightGearBridge` is now implemented as a native FMI 2.0 co-simulation FMU in C++ rather than relying on the placeholder Modelica implementation.
+
+Current behavior:
+
+- outbound telemetry is emitted as a UDP generic packet from the FMU once per communication step
+- inbound control packets are read non-blocking by the FMU once per communication step
+- the control packet currently accepts a minimal four-field format:
+  `stick_pitch_norm,stick_roll_norm,rudder_norm,throttle_norm`
+- if additional fields are supplied, the FMU also accepts:
+  `throttle_aux_norm,button_mask,hat_x,hat_y,mode_switch,reserved`
+
+FlightGear protocol definitions for this packet format are stored under:
+
+- `flightgear/Protocol/ssp_aircraft_state.xml`
+- `flightgear/Protocol/ssp_aircraft_controls.xml`
+
 ## Timing approach
 
 The first realtime implementation should use the existing `ssp4sim` realtime execution option to pace the simulation.
