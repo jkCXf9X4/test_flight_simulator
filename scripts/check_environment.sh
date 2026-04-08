@@ -23,7 +23,13 @@ check_image_present() {
 check_x11() {
   command -v xhost >/dev/null 2>&1 || fail "xhost is not installed or not on PATH"
   [[ -n "${DISPLAY:-}" ]] || fail "DISPLAY is not set"
-  [[ -S /tmp/.X11-unix/X${DISPLAY#*:} ]] || fail "X11 socket for DISPLAY=$DISPLAY is not available under /tmp/.X11-unix"
+
+  local display_suffix="${DISPLAY#*:}"
+  local display_number="${display_suffix%%.*}"
+  local socket_path="/tmp/.X11-unix/X${display_number}"
+  [[ "$display_number" =~ ^[0-9]+$ ]] || fail "DISPLAY=$DISPLAY does not contain a numeric X11 display number"
+  [[ -S "$socket_path" ]] || fail "X11 socket for DISPLAY=$DISPLAY is not available at $socket_path"
+
   local xauth_path="${XAUTHORITY:-$HOME/.Xauthority}"
   [[ -f "$xauth_path" ]] || fail "Xauthority file not found at $xauth_path"
 }

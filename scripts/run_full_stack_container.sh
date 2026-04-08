@@ -26,8 +26,10 @@ fi
 
 if [[ -f "$REPO_ROOT/$SCENARIO_PATH" ]]; then
   SCENARIO_ABS="$REPO_ROOT/$SCENARIO_PATH"
+  BRIDGE_SCENARIO_PATH="/workspace/$SCENARIO_PATH"
 elif [[ -f "$REPO_ROOT/3rd_party/airplane/$SCENARIO_PATH" ]]; then
   SCENARIO_ABS="$REPO_ROOT/3rd_party/airplane/$SCENARIO_PATH"
+  BRIDGE_SCENARIO_PATH="/workspace/3rd_party/airplane/$SCENARIO_PATH"
 else
   echo "Scenario file not found: $SCENARIO_PATH" >&2
   exit 1
@@ -69,13 +71,18 @@ done
 
 exec podman "${PODMAN_ARGS[@]}" \
   "$IMAGE_NAME" \
-  "source /opt/ros/kilted/setup.bash && \
+  "set -eo pipefail; \
+   source /opt/ros/kilted/setup.bash; \
+   set -u; \
    ./scripts/run_airplane_scenario.sh $(printf '%q' "$SCENARIO_PATH") --realtime --bridge-input --config-path $(printf '%q' "$LOCAL_REALTIME_CONFIG")${SIM_ARGS_STR} & \
-   SIM_PID=\$! && \
-   sleep $(printf '%q' "$SIM_READY_DELAY") && \
-   python3 -m ros2_bridge.node --scenario $(printf '%q' "$SCENARIO_ABS") --host $(printf '%q' "$BRIDGE_HOST") --state-port $(printf '%q' "$BRIDGE_STATE_PORT") --command-port $(printf '%q' "$BRIDGE_COMMAND_PORT") & \
-   BRIDGE_PID=\$! && \
-   rviz2 -d $(printf '%q' "$RVIZ_CONFIG") && \
-   kill \$BRIDGE_PID \$SIM_PID >/dev/null 2>&1 || true && \
-   wait \$BRIDGE_PID >/dev/null 2>&1 || true && \
-   wait \$SIM_PID >/dev/null 2>&1 || true"
+   SIM_PID=\$!; \
+   sleep $(printf '%q' "$SIM_READY_DELAY"); \
+   python3 -m ros2_bridge.node --scenario $(printf '%q' "$BRIDGE_SCENARIO_PATH") --host $(printf '%q' "$BRIDGE_HOST") --state-port $(printf '%q' "$BRIDGE_STATE_PORT") --command-port $(printf '%q' "$BRIDGE_COMMAND_PORT") & \
+   BRIDGE_PID=\$!; \
+   cleanup_inner() { \
+     kill \$BRIDGE_PID \$SIM_PID >/dev/null 2>&1 || true; \
+     wait \$BRIDGE_PID >/dev/null 2>&1 || true; \
+     wait \$SIM_PID >/dev/null 2>&1 || true; \
+   }; \
+   trap cleanup_inner EXIT; \
+   rviz2 -d $(printf '%q' "$RVIZ_CONFIG")"
