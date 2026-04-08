@@ -2,27 +2,29 @@
 
 This repository uses the airplane package in `3rd_party/airplane` as the simulation core. The top repo stores the operational entry points used to build, run, and evolve the simulation workflow.
 
-## Current supported workflow
+## Supported workflows
 
-The currently working path is the batch SSP workflow:
+The repository supports:
 
 1. Build the aircraft FMUs/SSD/SSP.
 2. Run a scenario through `ssp4sim`.
-3. Post-process and inspect the generated results.
+3. Launch the live RViz workflow through Podman.
+4. Post-process and inspect the generated results.
 
 Top-level wrappers:
 
+- `./scripts/check_environment.sh --live-container`
+- `./scripts/build_ros2_container.sh`
+- `./scripts/run_full_stack_container.sh <scenario-json>`
 - `./scripts/build_airplane.sh`
 - `./scripts/run_airplane_scenario.sh <scenario-json>`
-- `./scripts/run_rviz_session.sh <scenario-json>`
-- `./scripts/run_full_stack_container.sh <scenario-json>`
 
-Example:
+Recommended live workflow:
 
 ```bash
-./scripts/build_airplane.sh
-./scripts/run_airplane_scenario.sh resources/scenarios/test_scenario.json
-./scripts/run_rviz_session.sh resources/scenarios/test_scenario.json -- --stop-time 30
+./scripts/check_environment.sh --live-container
+./scripts/build_ros2_container.sh
+./scripts/run_full_stack_container.sh resources/scenarios/test_scenario.json
 ```
 
 What the build now does inside `3rd_party/airplane`:
@@ -57,19 +59,14 @@ Current behavior:
 - control packets are JSON objects carrying the `PilotCommand` fields
 - when no fresh control packets arrive, the bridge marks itself inactive so `ControlInterface` falls back to the scripted/manual default path
 
-ROS 2 / RViz launcher behavior:
-
-- `./scripts/run_rviz_session.sh` starts the scenario in realtime with bridge input enabled
-- the launcher then starts `python3 -m ros2_bridge.node` and `rviz2`
-- default bridge ports remain state `5501` and control `5502`
-- extra simulator arguments can be appended after `--`
-
 Containerized launcher behavior:
 
+- `./scripts/check_environment.sh --live-container` validates Podman, the built image, and the X11 requirements before launch
 - `./scripts/build_ros2_container.sh` builds the reusable Podman image
 - `./scripts/run_full_stack_container.sh` runs the scenario, ROS 2 bridge runtime, and RViz entirely inside the container
 - the container reuses the checked-out workspace via a bind mount and forwards X11 for RViz
 - the simulator runner no longer requires a host-side `venv`; it uses `venv` when present and otherwise falls back to the container Python
+- host-side live RViz launching has been removed from the repository
 
 Implementation/build notes:
 
@@ -105,5 +102,5 @@ The aircraft package now includes the native bridge in the packaged SSP workflow
 
 ## Expected next implementation steps
 
-1. Document the expected reference origin for non-default environments.
+1. Simplify the bridge/FMUs naming away from the historical FlightGear identifier.
 2. Add a ROS-native operator runbook for manual command publishers and RViz usage.

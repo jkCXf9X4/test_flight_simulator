@@ -22,6 +22,8 @@ if [[ "${1:-}" == "--" ]]; then
   shift
 fi
 
+"$REPO_ROOT/scripts/check_environment.sh" --live-container
+
 if [[ -f "$REPO_ROOT/$SCENARIO_PATH" ]]; then
   SCENARIO_ABS="$REPO_ROOT/$SCENARIO_PATH"
 elif [[ -f "$REPO_ROOT/3rd_party/airplane/$SCENARIO_PATH" ]]; then
@@ -31,26 +33,7 @@ else
   exit 1
 fi
 
-if ! command -v xhost >/dev/null 2>&1; then
-  echo "Could not find xhost on PATH." >&2
-  exit 1
-fi
-
-if ! command -v podman >/dev/null 2>&1; then
-  echo "Could not find podman on PATH." >&2
-  exit 1
-fi
-
 XAUTHORITY_PATH="${XAUTHORITY:-$HOME/.Xauthority}"
-if [[ ! -f "$XAUTHORITY_PATH" ]]; then
-  echo "Expected Xauthority file at $XAUTHORITY_PATH." >&2
-  exit 1
-fi
-
-if ! podman image exists "$IMAGE_NAME"; then
-  echo "Podman image $IMAGE_NAME does not exist. Build it with ./scripts/build_ros2_container.sh" >&2
-  exit 1
-fi
 
 cleanup() {
   podman rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true

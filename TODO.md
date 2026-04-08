@@ -1,3 +1,1 @@
- * Expand the ROS 2 operator workflow documentation
-
-its now installed and availible at path
+* Add a short operator guide for publishing manual control messages into the ROS bridge.

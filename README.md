@@ -8,15 +8,28 @@ Top-level workspace for running the airplane SSP and evolving the interactive si
 - `docs` contains top-repo operational documentation for building and running the simulation stack.
 - `scripts` contains top-repo helper scripts that wrap common airplane build and scenario commands.
 
-## Entry points
+## Just Works
 
-- Build the aircraft package: `./scripts/build_airplane.sh`
-- Build the ROS 2 Podman image: `./scripts/build_ros2_container.sh`
-- Run a waypoint scenario: `./scripts/run_airplane_scenario.sh resources/scenarios/test_scenario.json`
-- Launch the ROS 2 + RViz session: `./scripts/run_rviz_session.sh`
-- Launch the simulator + ROS 2 + RViz entirely inside Podman: `./scripts/run_full_stack_container.sh`
-- Read the simulation runbook: `docs/simulation_workflow.md`
+The supported live workflow is containerized.
 
-## Interactive direction
+```bash
+./scripts/check_environment.sh --live-container
+./scripts/build_ros2_container.sh
+./scripts/run_full_stack_container.sh
+```
 
-The current recommended interactive direction keeps `ssp4sim` as the simulation master and uses a ROS 2 / RViz sidecar for visualization plus optional manual-control pass-through. The bridge FMU now publishes a ROS-oriented UDP packet to a Python ROS 2 companion runtime rather than speaking FlightGear directly. Repo-level operational notes live in `docs/simulation_workflow.md`.
+Use a different scenario with:
+
+```bash
+./scripts/run_full_stack_container.sh resources/scenarios/test_scenario.json
+```
+
+Other useful entry points:
+
+- Rebuild SSP/FMU artifacts from source: `./scripts/build_airplane.sh`
+- Run a batch scenario without RViz: `./scripts/run_airplane_scenario.sh resources/scenarios/test_scenario.json`
+- Read the workflow notes: `docs/simulation_workflow.md`
+
+## Interactive Direction
+
+The supported live setup keeps `ssp4sim` as the simulation master and runs RViz plus the ROS 2 bridge runtime inside a Podman container. The bridge FMU publishes a ROS-oriented UDP packet to the Python ROS 2 companion runtime. Repo-level operational notes live in `docs/simulation_workflow.md`.
