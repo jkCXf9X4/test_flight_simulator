@@ -22,6 +22,14 @@ Example:
 ./scripts/run_airplane_scenario.sh resources/scenarios/test_scenario.json
 ```
 
+What the build now does inside `3rd_party/airplane`:
+
+- regenerates architecture-derived interfaces
+- exports the Modelica subsystem FMUs with OpenModelica
+- builds the native C++ `FlightGearBridge` FMI 2.0 co-simulation FMU
+- verifies the bridge FMU with a UDP socket regression test
+- regenerates the SSD and packages `build/ssp/aircraft.ssp`
+
 ## Interactive target architecture
 
 The intended interactive runtime is:
@@ -54,6 +62,13 @@ FlightGear protocol definitions for this packet format are stored under:
 - `flightgear/Protocol/ssp_aircraft_state.xml`
 - `flightgear/Protocol/ssp_aircraft_controls.xml`
 
+Implementation/build notes:
+
+- the FMU is built from `3rd_party/airplane/native/flightgear_bridge/`
+- the generated FMU is written to `3rd_party/airplane/build/fmus/Aircraft_FlightGearBridge.fmu`
+- the shared library exports the standard FMI 2 `fmi2*` entry points so `pyssp4sim` can import it directly
+- `3rd_party/airplane/tests/test_flightgear_bridge_fmu.py` is the regression test that checks UDP send/receive on the native bridge
+
 ## Timing approach
 
 The first realtime implementation should use the existing `ssp4sim` realtime execution option to pace the simulation.
@@ -73,15 +88,15 @@ Planned follow-up work, but explicitly not part of the initial implementation:
 
 ## Current aircraft adaptation status
 
-The aircraft package has started adapting toward the interactive design:
+The aircraft package now includes the native bridge in the packaged SSP workflow:
 
-- a dedicated `FlightGearBridge` component is being introduced into the aircraft architecture
-- the manual control path is being refactored so bridge-provided commands can enter through `ControlInterface`
-
-The bridge runtime itself is not fully implemented yet. Current top-level scripts are focused on building and running the existing airplane simulation consistently from the parent repo.
+- the dedicated `FlightGearBridge` component is part of the aircraft architecture and SSD
+- the bridge is packaged as a native C++ FMU alongside the Modelica-exported subsystem FMUs
+- bridge-produced pilot commands enter through `ControlInterface`
+- top-level scripts build the SSP and can run a scenario while the bridge emits live UDP telemetry
 
 ## Expected next implementation steps
 
-1. Add a runnable bridge process at the top repo level for using `ssp4sim` realtime execution and exchanging FlightGear generic messages.
-2. Extend the aircraft package so the bridge-facing component can be exported and packaged cleanly with the rest of the system.
-3. Add a FlightGear launch script and a documented property/protocol mapping.
+1. Add a top-level FlightGear launch/run script for realtime interactive sessions.
+2. Document the expected reference origin and runtime port configuration for non-default environments.
+3. Add a more complete FlightGear property/protocol mapping and operator runbook.
