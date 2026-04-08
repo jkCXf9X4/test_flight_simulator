@@ -39,7 +39,21 @@ exec env HOME="$FGFS_HOME_ROOT" \
   --aircraft=ufo \
   --fdm=null \
   --disable-terrasync \
+  --disable-sound \
+  --disable-ai-traffic \
+  --disable-real-weather-fetch \
+  --disable-random-objects \
+  --disable-random-vegetation \
+  --disable-random-buildings \
+  --disable-real-weather-fetch \
+  --prop:/sim/rendering/shaders/quality-level=0 \
+  --prop:/sim/rendering/multi-sample-buffers=0 \
+  --prop:/sim/rendering/multi-samples=0 \
+  --geometry=1024x768 \
+  --prop:/sim/current-view/view-number=0 \
   --timeofday=noon \
   --generic=socket,in,10,127.0.0.1,5501,udp,ssp_aircraft_state \
   --generic=socket,out,10,127.0.0.1,5502,udp,ssp_aircraft_controls \
+  --airport=KSFO \
+  --runway=28R \
   "$@"

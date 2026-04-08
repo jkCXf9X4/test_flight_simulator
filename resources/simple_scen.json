@@ -1,0 +1,33 @@
+{
+  "name": "high_altitude_intercept",
+  "description": "Sprint from alert base to intercept a supersonic target, exercising Mach 2 dash capability and HOTAS/autopilot coordination.",
+  "requirements": ["REQ_Performance", "REQ_Control"],
+  "simulation_overrides": {
+    "cruise_speed_mps": 680.0,
+    "fuel_capacity_kg": 2600.0,
+    "fuel_burn_rate_kgps": 0.62
+  },
+  "points": [
+    {
+      "latitude_deg": -2.957519,
+      "longitude_deg": 39.232955,
+      "altitude_m": 0.0
+    },
+    {
+      "latitude_deg": -2.830486,
+      "longitude_deg": 39.793442,
+      "altitude_m": 4216.96
+    },
+    {
+      "latitude_deg": -3.325857,
+      "longitude_deg": 41.810818,
+      "altitude_m": 8924.23
+    },
+    {
+      "latitude_deg": -2.857028,
+      "longitude_deg": 43.751846,
+      "altitude_m": 0.0
+    }
+  ],
+  "total_distance_km": 516.23
+}
