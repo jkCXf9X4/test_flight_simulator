@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
 
-SCENARIO_PATH="${1:-resources/scenarios/test_scenario.json}"
+SCENARIO_PATH="${1:-build/ssp/scenario.json}"
 STOP_TIME="${STOP_TIME:-10}"
-CONFIG_PATH="${CONFIG_PATH:-/workspace/build/results/config.realtime.json}"
 
 if [[ -f "/workspace/$SCENARIO_PATH" ]]; then
   BRIDGE_SCENARIO_PATH="/workspace/$SCENARIO_PATH"
-elif [[ -f "/workspace/3rd_party/airplane/$SCENARIO_PATH" ]]; then
-  BRIDGE_SCENARIO_PATH="/workspace/3rd_party/airplane/$SCENARIO_PATH"
 else
   echo "Scenario file not found: $SCENARIO_PATH" >&2
   exit 1
@@ -18,12 +15,9 @@ source /opt/ros/kilted/setup.bash
 set -u
 set +e
 
-./scripts/run_airplane_scenario.sh \
-  "$SCENARIO_PATH" \
+./scripts/run_airplane_scenario.py \
   --realtime \
-  --bridge-input \
   --stop-time "$STOP_TIME" \
-  --config-path "$CONFIG_PATH" \
   >/tmp/sim.out 2>/tmp/sim.err &
 SIM_PID=$!
 

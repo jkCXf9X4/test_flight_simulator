@@ -7,24 +7,26 @@ This repository uses the airplane package in `3rd_party/airplane` as the simulat
 The repository supports:
 
 1. Build the aircraft FMUs/SSD/SSP.
-2. Run a scenario through `ssp4sim`.
-3. Launch the live RViz workflow through Podman.
-4. Post-process and inspect the generated results.
+2. Seed a local `build/ssp` simulation bundle.
+3. Run that local bundle through `ssp4sim`.
+4. Launch the live RViz workflow through Podman.
+5. Post-process and inspect the generated results.
 
 Top-level wrappers:
 
 - `./scripts/check_environment.sh --live-container`
+- `./scripts/run_full_stack_container.sh`
+- `./scripts/build_airplane.py`
 - `./scripts/build_ros2_container.sh`
-- `./scripts/run_full_stack_container.sh <scenario-json>`
-- `./scripts/build_airplane.sh`
-- `./scripts/run_airplane_scenario.sh <scenario-json>`
+- `./scripts/run_airplane_scenario.py`
 
 Recommended live workflow:
 
 ```bash
 ./scripts/check_environment.sh --live-container
+./scripts/build_airplane.py
 ./scripts/build_ros2_container.sh
-./scripts/run_full_stack_container.sh resources/scenarios/test_scenario.json
+./scripts/run_full_stack_container.sh
 ```
 
 What the build now does inside `3rd_party/airplane`:
@@ -34,6 +36,9 @@ What the build now does inside `3rd_party/airplane`:
 - builds the native C++ bridge FMI 2.0 co-simulation FMU
 - verifies the bridge FMU with a UDP socket regression test
 - regenerates the SSD and packages `build/ssp/aircraft.ssp`
+- copies the baseline SSP into the top-level `build/ssp`
+- copies the selected scenario into the top-level `build/ssp/scenario.json`
+- writes top-level `build/ssp/config.json` and `build/ssp/config.realtime.json`
 
 ## Interactive target architecture
 
@@ -62,10 +67,12 @@ Current behavior:
 Containerized launcher behavior:
 
 - `./scripts/check_environment.sh --live-container` validates Podman, the built image, and the X11 requirements before launch
+- `./scripts/build_airplane.py [scenario-json]` refreshes the local SSP bundle used by both batch and live runs
 - `./scripts/build_ros2_container.sh` builds the reusable Podman image
-- `./scripts/run_full_stack_container.sh` runs the scenario, ROS 2 bridge runtime, and RViz entirely inside the container
+- `./scripts/run_full_stack_container.sh` runs the local `build/ssp` scenario, ROS 2 bridge runtime, and RViz entirely inside the container with no extra arguments
 - the container reuses the checked-out workspace via a bind mount and forwards X11 for RViz
-- the simulator runner no longer requires a host-side `venv`; it uses `venv` when present and otherwise falls back to the container Python
+- `./scripts/run_airplane_scenario.py` only runs `pyssp4sim` against the prepared local config and does not repackage scenario artifacts
+- use `./scripts/run_airplane_scenario.py --realtime` when you want the local realtime config without RViz
 - host-side live RViz launching has been removed from the repository
 
 Implementation/build notes:

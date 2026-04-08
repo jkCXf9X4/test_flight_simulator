@@ -14,20 +14,22 @@ The supported live workflow is containerized.
 
 ```bash
 ./scripts/check_environment.sh --live-container
+./scripts/build_airplane.py
 ./scripts/build_ros2_container.sh
 ./scripts/run_full_stack_container.sh
 ```
 
-Use a different scenario with:
+Seed the local bundle with a different scenario during build:
 
 ```bash
-./scripts/run_full_stack_container.sh resources/scenarios/test_scenario.json
+./scripts/build_airplane.py 3rd_party/airplane/resources/scenarios/test_scenario.json
 ```
 
 Other useful entry points:
 
-- Rebuild SSP/FMU artifacts from source: `./scripts/build_airplane.sh`
-- Run a batch scenario without RViz: `./scripts/run_airplane_scenario.sh resources/scenarios/test_scenario.json`
+- Rebuild SSP/FMU artifacts and refresh the local `build/ssp` bundle: `./scripts/build_airplane.py`
+- Run a batch simulation from the local bundle: `./scripts/run_airplane_scenario.py`
+- Run a realtime batch simulation from the local bundle: `./scripts/run_airplane_scenario.py --realtime`
 - Read the workflow notes: `docs/simulation_workflow.md`
 
 ## Interactive Direction
