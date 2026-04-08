@@ -31,7 +31,7 @@ python3 -m ros2_bridge.node \
   >/tmp/bridge.out 2>/tmp/bridge.err &
 BRIDGE_PID=$!
 
-timeout 12s rviz2 -d /workspace/ros2_bridge/mission_views.rviz >/tmp/rviz.out 2>/tmp/rviz.err
+timeout 12s rviz2 -d /workspace/build/ssp/mission_views.rviz >/tmp/rviz.out 2>/tmp/rviz.err
 RVIZ_STATUS=$?
 
 wait "$SIM_PID"

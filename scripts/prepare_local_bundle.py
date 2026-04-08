@@ -20,6 +20,83 @@ from scripts.lib.scenarios.preparation import estimate_duration, prepare_scenari
 from scripts.lib.scenarios.runtime import create_simulation_config, write_simulation_config
 
 
+def build_rviz_config(local_points: list[dict[str, float]]) -> str:
+    target_span_m = 8000.0
+    if local_points:
+        xs = [point["x_km"] * 1000.0 for point in local_points]
+        ys = [point["y_km"] * 1000.0 for point in local_points]
+        span_m = max(max(xs) - min(xs), max(ys) - min(ys), 1000.0)
+        viz_scale = max(span_m / target_span_m, 1.0)
+        center_x = ((min(xs) + max(xs)) / 2.0) / viz_scale
+        center_y = ((min(ys) + max(ys)) / 2.0) / viz_scale
+        normalized_span_m = span_m / viz_scale
+    else:
+        center_x = 0.0
+        center_y = 0.0
+        normalized_span_m = 1000.0
+
+    orbit_distance = min(max(normalized_span_m * 1.1, 4000.0), 12000.0)
+    grid_cell_size = min(max(normalized_span_m / 20.0, 50.0), 500.0)
+    grid_cell_count = max(40, min(int(normalized_span_m / grid_cell_size) + 20, 200))
+
+    return f"""Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 1
+      Class: rviz_default_plugins/Grid
+      Enabled: true
+      Cell Size: {grid_cell_size:.3f}
+      Name: Grid
+      Plane Cell Count: {grid_cell_count}
+      Plane: XY
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Name: TF
+    - Class: rviz_default_plugins/Path
+      Enabled: true
+      Name: Flight Path
+      Topic:
+        Value: /aircraft/path
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Waypoints
+      Topic:
+        Value: /mission/waypoints
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: Aircraft Marker
+      Topic:
+        Value: /aircraft/marker
+  Global Options:
+    Fixed Frame: map
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: {orbit_distance:.3f}
+      Focal Point:
+        X: {center_x:.3f}
+        Y: {center_y:.3f}
+        Z: 0
+      Name: Mission Overview
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 1000
+  Hide Left Dock: false
+  Hide Right Dock: false
+  Width: 1600
+  X: 60
+  Y: 40
+"""
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -83,6 +160,7 @@ def main(argv: list[str] | None = None) -> int:
     local_prepared_ssp_path = bundle_dir / "scenario.ssp"
     local_config_path = bundle_dir / "config.json"
     local_realtime_config_path = bundle_dir / "config.realtime.json"
+    local_rviz_config_path = bundle_dir / "mission_views.rviz"
     result_file = results_dir / "scenario_results.csv"
     realtime_result_file = results_dir / "scenario_results_realtime.csv"
     config_ssp_path = Path("build/ssp/scenario.ssp")
@@ -131,6 +209,7 @@ def main(argv: list[str] | None = None) -> int:
         result_file=config_realtime_result_path,
         config_path=local_realtime_config_path,
     )
+    local_rviz_config_path.write_text(build_rviz_config(prepared.local_points), encoding="utf-8")
 
     summary = {
         "scenario_source": str(source_scenario),
@@ -141,6 +220,7 @@ def main(argv: list[str] | None = None) -> int:
         "scenario": str(local_scenario_path),
         "config": str(local_config_path),
         "config_realtime": str(local_realtime_config_path),
+        "rviz_config": str(local_rviz_config_path),
         "parameter_set": str(prepared.parameter_set_path),
         "waypoints": str(prepared.waypoints_file),
         "stop_time_s": stop_time_s,

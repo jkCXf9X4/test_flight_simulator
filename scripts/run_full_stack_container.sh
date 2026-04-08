@@ -9,7 +9,7 @@ BRIDGE_STATE_PORT="${BRIDGE_STATE_PORT:-5501}"
 BRIDGE_COMMAND_PORT="${BRIDGE_COMMAND_PORT:-5502}"
 IMAGE_NAME="${IMAGE_NAME:-test-flight-simulator-ros2:kilted}"
 CONTAINER_NAME="${CONTAINER_NAME:-test-flight-simulator-full-stack}"
-RVIZ_CONFIG="${RVIZ_CONFIG:-/workspace/ros2_bridge/mission_views.rviz}"
+RVIZ_CONFIG="${RVIZ_CONFIG:-/workspace/build/ssp/mission_views.rviz}"
 
 if [[ $# -gt 0 ]]; then
   echo "run_full_stack_container.sh does not accept arguments. Scenario selection now happens during build." >&2
@@ -23,6 +23,12 @@ if [[ -f "$REPO_ROOT/build/ssp/scenario.json" ]]; then
   BRIDGE_SCENARIO_PATH="/workspace/build/ssp/scenario.json"
 else
   echo "Local scenario file not found: build/ssp/scenario.json" >&2
+  echo "Run ./scripts/build_airplane.py first to prepare ./build/ssp." >&2
+  exit 1
+fi
+
+if [[ ! -f "$REPO_ROOT/build/ssp/mission_views.rviz" ]]; then
+  echo "Local RViz config not found: build/ssp/mission_views.rviz" >&2
   echo "Run ./scripts/build_airplane.py first to prepare ./build/ssp." >&2
   exit 1
 fi

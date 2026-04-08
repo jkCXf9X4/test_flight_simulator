@@ -66,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     pythonpath = env.get("PYTHONPATH")
     env["PYTHONPATH"] = str(AIRPLANE_ROOT) if not pythonpath else f"{AIRPLANE_ROOT}:{pythonpath}"
 
+    print(f"Running {str(config_path)}")
     subprocess.run(
         [python_bin, "-m", "scripts.cli.scenarios_run_ssp4sim", "--config-path", str(config_path)],
         cwd=REPO_ROOT,
