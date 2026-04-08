@@ -12,6 +12,8 @@ Top-level workspace for running the airplane SSP and evolving the interactive si
 
 - Build the aircraft package: `./scripts/build_airplane.sh`
 - Run a waypoint scenario: `./scripts/run_airplane_scenario.sh resources/scenarios/test_scenario.json`
+- Launch FlightGear against the bridge ports: `./scripts/run_flightgear.sh`
+- Launch FlightGear and the simulator together: `./scripts/run_interactive_session.sh`
 - Read the simulation runbook: `docs/simulation_workflow.md`
 
 ## Interactive direction

@@ -10,4 +10,4 @@ shift || true
 
 cd "$AIRPLANE_ROOT"
 source venv/bin/activate
-exec python3 -m scripts.workflows.simulate_scenario --scenario "$SCENARIO_PATH" "$@"
+exec python3 -m scripts.cli.scenarios_simulate --scenario "$SCENARIO_PATH" "$@"

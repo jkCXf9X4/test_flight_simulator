@@ -14,12 +14,16 @@ Top-level wrappers:
 
 - `./scripts/build_airplane.sh`
 - `./scripts/run_airplane_scenario.sh <scenario-json>`
+- `./scripts/run_flightgear.sh`
+- `./scripts/run_interactive_session.sh <scenario-json>`
 
 Example:
 
 ```bash
 ./scripts/build_airplane.sh
 ./scripts/run_airplane_scenario.sh resources/scenarios/test_scenario.json
+./scripts/run_flightgear.sh
+./scripts/run_interactive_session.sh resources/scenarios/test_scenario.json -- --stop-time 30
 ```
 
 What the build now does inside `3rd_party/airplane`:
@@ -62,6 +66,16 @@ FlightGear protocol definitions for this packet format are stored under:
 - `flightgear/Protocol/ssp_aircraft_state.xml`
 - `flightgear/Protocol/ssp_aircraft_controls.xml`
 
+Top-level launcher behavior:
+
+- `./scripts/run_flightgear.sh` starts `fgfs` if available, otherwise `flightgear`
+- the script copies the repo protocol XML files into the active FlightGear home before launch
+- default bridge ports are telemetry `5501` and control `5502`
+- `FGFS_HOME_ROOT` can be used to override the writable home root used by the launcher
+- extra FlightGear arguments can be appended after the script name
+- `./scripts/run_interactive_session.sh` starts FlightGear first, waits briefly, then runs the scenario wrapper
+- pass simulator arguments after `--`, for example `./scripts/run_interactive_session.sh resources/scenarios/test_scenario.json -- --stop-time 30`
+
 Implementation/build notes:
 
 - the FMU is built from `3rd_party/airplane/native/flightgear_bridge/`
@@ -97,6 +111,5 @@ The aircraft package now includes the native bridge in the packaged SSP workflow
 
 ## Expected next implementation steps
 
-1. Add a top-level FlightGear launch/run script for realtime interactive sessions.
-2. Document the expected reference origin and runtime port configuration for non-default environments.
-3. Add a more complete FlightGear property/protocol mapping and operator runbook.
+1. Document the expected reference origin for non-default environments.
+2. Add a more complete FlightGear property/protocol mapping and operator runbook.
