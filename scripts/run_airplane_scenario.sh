@@ -9,5 +9,7 @@ SCENARIO_PATH="${1:-resources/scenarios/test_scenario.json}"
 shift || true
 
 cd "$AIRPLANE_ROOT"
-source venv/bin/activate
+if [[ -f venv/bin/activate ]]; then
+  source venv/bin/activate
+fi
 exec python3 -m scripts.cli.scenarios_simulate --scenario "$SCENARIO_PATH" "$@"

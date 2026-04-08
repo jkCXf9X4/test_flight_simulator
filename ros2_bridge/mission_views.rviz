@@ -1,0 +1,40 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 1
+      Class: rviz_default_plugins/Grid
+      Name: Grid
+      Plane Cell Count: 40
+      Plane: XY
+    - Class: rviz_default_plugins/TF
+      Name: TF
+    - Class: rviz_default_plugins/Path
+      Name: Flight Path
+      Topic:
+        Value: /aircraft/path
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Waypoints
+      Topic:
+        Value: /mission/waypoints
+    - Class: rviz_default_plugins/Pose
+      Name: Aircraft Pose
+      Topic:
+        Value: /aircraft/pose
+  Global Options:
+    Fixed Frame: map
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 5000
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Name: Mission Overview

@@ -1,0 +1,6 @@
+.git
+.venv
+**/__pycache__
+build
+3rd_party/airplane/build
+3rd_party/airplane/.pytest_cache

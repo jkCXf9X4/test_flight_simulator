@@ -1,0 +1,31 @@
+FROM docker.io/osrf/ros:kilted-desktop
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV ROS_DISTRO=kilted
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PIP_TRUSTED_HOST="pypi.org files.pythonhosted.org github.com release-assets.githubusercontent.com objects.githubusercontent.com"
+ENV VIRTUAL_ENV=/opt/test-flight-simulator-venv
+ENV PATH=/opt/test-flight-simulator-venv/bin:$PATH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-venv \
+    python3-pip \
+    python3-yaml \
+    python3-colcon-common-extensions \
+    x11-apps \
+    xauth \
+    libgl1-mesa-dri \
+    mesa-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+RUN python3 -m venv "$VIRTUAL_ENV" --system-site-packages && \
+    "$VIRTUAL_ENV/bin/pip" install --no-cache-dir \
+      pytest \
+      matplotlib>=3.7 \
+      fmpy \
+      https://github.com/jkCXf9X4/ssp4sim/releases/latest/download/pyssp4sim-0.0.0+lat-cp39-abi3-linux_x86_64.whl
+
+ENTRYPOINT ["/bin/bash", "-lc"]

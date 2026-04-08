@@ -16,6 +16,8 @@ Top-level wrappers:
 - `./scripts/run_airplane_scenario.sh <scenario-json>`
 - `./scripts/run_flightgear.sh`
 - `./scripts/run_interactive_session.sh <scenario-json>`
+- `./scripts/run_rviz_session.sh <scenario-json>`
+- `./scripts/run_full_stack_container.sh <scenario-json>`
 
 Example:
 
@@ -36,52 +38,50 @@ What the build now does inside `3rd_party/airplane`:
 
 ## Interactive target architecture
 
-The intended interactive runtime is:
+The current interactive runtime is:
 
-`FlightGear <-> FlightGearBridge <-> ssp4sim SSP`
+`RViz / ROS 2 nodes <-> ROS2 UDP companion runtime <-> bridge FMU <-> ssp4sim SSP`
 
 Where:
 
 - `ssp4sim` remains the simulation engine and co-simulation master.
-- `FlightGear` provides the visual frontend and pilot I/O.
-- `FlightGearBridge` is the adapter layer that translates between simulation signals and FlightGear generic socket messages.
+- the native bridge FMU exports simulator state and accepts manual pilot commands.
+- a Python ROS 2 runtime publishes RViz topics and forwards manual control messages back to the bridge.
+- `rviz2` is the primary live visualization frontend.
 
-The first implementation target is FlightGear `generic` communication rather than native protocol packing, because it keeps the exchanged signals explicit during integration.
+FlightGear support remains in the repo, but it is no longer the recommended live-visualization path.
 
-## Current FlightGearBridge implementation
+## Current bridge implementation
 
-`FlightGearBridge` is now implemented as a native FMI 2.0 co-simulation FMU in C++ rather than relying on the placeholder Modelica implementation.
+The bridge remains a native FMI 2.0 co-simulation FMU in C++, but it now emits newline-delimited JSON state packets for a ROS 2 companion runtime rather than FlightGear generic CSV.
 
 Current behavior:
 
-- outbound telemetry is emitted as a UDP generic packet from the FMU once per communication step
+- outbound telemetry is emitted as a UDP JSON packet from the FMU once per communication step
 - inbound control packets are read non-blocking by the FMU once per communication step
-- the control packet currently accepts a minimal four-field format:
-  `stick_pitch_norm,stick_roll_norm,rudder_norm,throttle_norm`
-- if additional fields are supplied, the FMU also accepts:
-  `throttle_aux_norm,button_mask,hat_x,hat_y,mode_switch,reserved`
+- control packets are JSON objects carrying the `PilotCommand` fields
+- when no fresh control packets arrive, the bridge marks itself inactive so `ControlInterface` falls back to the scripted/manual default path
 
-FlightGear protocol definitions for this packet format are stored under:
+ROS 2 / RViz launcher behavior:
 
-- `flightgear/Protocol/ssp_aircraft_state.xml`
-- `flightgear/Protocol/ssp_aircraft_controls.xml`
+- `./scripts/run_rviz_session.sh` starts the scenario in realtime with bridge input enabled
+- the launcher then starts `python3 -m ros2_bridge.node` and `rviz2`
+- default bridge ports remain state `5501` and control `5502`
+- extra simulator arguments can be appended after `--`
 
-Top-level launcher behavior:
+Containerized launcher behavior:
 
-- `./scripts/run_flightgear.sh` starts `fgfs` if available, otherwise `flightgear`
-- the script copies the repo protocol XML files into the active FlightGear home before launch
-- default bridge ports are telemetry `5501` and control `5502`
-- `FGFS_HOME_ROOT` can be used to override the writable home root used by the launcher
-- extra FlightGear arguments can be appended after the script name
-- `./scripts/run_interactive_session.sh` starts FlightGear first, waits briefly, then runs the scenario wrapper
-- pass simulator arguments after `--`, for example `./scripts/run_interactive_session.sh resources/scenarios/test_scenario.json -- --stop-time 30`
+- `./scripts/build_ros2_container.sh` builds the reusable Podman image
+- `./scripts/run_full_stack_container.sh` runs the scenario, ROS 2 bridge runtime, and RViz entirely inside the container
+- the container reuses the checked-out workspace via a bind mount and forwards X11 for RViz
+- the simulator runner no longer requires a host-side `venv`; it uses `venv` when present and otherwise falls back to the container Python
 
 Implementation/build notes:
 
-- the FMU is built from `3rd_party/airplane/native/flightgear_bridge/`
+- the FMU is built from `3rd_party/airplane/models/flightgear_bridge/native/`
 - the generated FMU is written to `3rd_party/airplane/build/fmus/Aircraft_FlightGearBridge.fmu`
 - the shared library exports the standard FMI 2 `fmi2*` entry points so `pyssp4sim` can import it directly
-- `3rd_party/airplane/tests/test_flightgear_bridge_fmu.py` is the regression test that checks UDP send/receive on the native bridge
+- `3rd_party/airplane/tests/test_flightgear_bridge_fmu.py` now verifies the JSON bridge packet and control pass-through path
 
 ## Timing approach
 
