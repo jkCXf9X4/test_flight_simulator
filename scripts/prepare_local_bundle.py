@@ -42,6 +42,11 @@ def build_rviz_config(local_points: list[dict[str, float]]) -> str:
     return f"""Panels:
   - Class: rviz_common/Displays
     Name: Displays
+  - Class: rviz_common/Views
+    Expanded:
+      - /Current View1
+    Name: Views
+    Splitter Ratio: 0.5
 Visualization Manager:
   Class: ""
   Displays:
@@ -85,12 +90,17 @@ Visualization Manager:
         Y: {center_y:.3f}
         Z: 0
       Name: Mission Overview
+      Pitch: 0.785
+      Target Frame: map
+      Yaw: 0.0
 Window Geometry:
   Displays:
     collapsed: false
   Height: 1000
   Hide Left Dock: false
   Hide Right Dock: false
+  Views:
+    collapsed: false
   Width: 1600
   X: 60
   Y: 40
