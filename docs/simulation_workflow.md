@@ -14,8 +14,6 @@ Top-level wrappers:
 
 - `./scripts/build_airplane.sh`
 - `./scripts/run_airplane_scenario.sh <scenario-json>`
-- `./scripts/run_flightgear.sh`
-- `./scripts/run_interactive_session.sh <scenario-json>`
 - `./scripts/run_rviz_session.sh <scenario-json>`
 - `./scripts/run_full_stack_container.sh <scenario-json>`
 
@@ -24,15 +22,14 @@ Example:
 ```bash
 ./scripts/build_airplane.sh
 ./scripts/run_airplane_scenario.sh resources/scenarios/test_scenario.json
-./scripts/run_flightgear.sh
-./scripts/run_interactive_session.sh resources/scenarios/test_scenario.json -- --stop-time 30
+./scripts/run_rviz_session.sh resources/scenarios/test_scenario.json -- --stop-time 30
 ```
 
 What the build now does inside `3rd_party/airplane`:
 
 - regenerates architecture-derived interfaces
 - exports the Modelica subsystem FMUs with OpenModelica
-- builds the native C++ `FlightGearBridge` FMI 2.0 co-simulation FMU
+- builds the native C++ bridge FMI 2.0 co-simulation FMU
 - verifies the bridge FMU with a UDP socket regression test
 - regenerates the SSD and packages `build/ssp/aircraft.ssp`
 
@@ -48,8 +45,6 @@ Where:
 - the native bridge FMU exports simulator state and accepts manual pilot commands.
 - a Python ROS 2 runtime publishes RViz topics and forwards manual control messages back to the bridge.
 - `rviz2` is the primary live visualization frontend.
-
-FlightGear support remains in the repo, but it is no longer the recommended live-visualization path.
 
 ## Current bridge implementation
 
@@ -97,7 +92,6 @@ Planned follow-up work, but explicitly not part of the initial implementation:
 ## Where design ownership lives
 
 - Repo-level operational workflow: this document
-- Aircraft-side integration design: `3rd_party/airplane/docs/flightgear_bridge.md`
 - Aircraft-side architecture notes: `3rd_party/airplane/architecture/simulation.sysml`
 
 ## Current aircraft adaptation status
@@ -112,4 +106,4 @@ The aircraft package now includes the native bridge in the packaged SSP workflow
 ## Expected next implementation steps
 
 1. Document the expected reference origin for non-default environments.
-2. Add a more complete FlightGear property/protocol mapping and operator runbook.
+2. Add a ROS-native operator runbook for manual command publishers and RViz usage.

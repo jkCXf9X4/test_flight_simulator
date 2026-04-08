@@ -22,6 +22,15 @@ if [[ "${1:-}" == "--" ]]; then
   shift
 fi
 
+if [[ -f "$REPO_ROOT/$SCENARIO_PATH" ]]; then
+  SCENARIO_ABS="$REPO_ROOT/$SCENARIO_PATH"
+elif [[ -f "$REPO_ROOT/3rd_party/airplane/$SCENARIO_PATH" ]]; then
+  SCENARIO_ABS="$REPO_ROOT/3rd_party/airplane/$SCENARIO_PATH"
+else
+  echo "Scenario file not found: $SCENARIO_PATH" >&2
+  exit 1
+fi
+
 if ! command -v xhost >/dev/null 2>&1; then
   echo "Could not find xhost on PATH." >&2
   exit 1
@@ -81,7 +90,7 @@ exec podman "${PODMAN_ARGS[@]}" \
    ./scripts/run_airplane_scenario.sh $(printf '%q' "$SCENARIO_PATH") --realtime --bridge-input --config-path $(printf '%q' "$LOCAL_REALTIME_CONFIG")${SIM_ARGS_STR} & \
    SIM_PID=\$! && \
    sleep $(printf '%q' "$SIM_READY_DELAY") && \
-   python3 -m ros2_bridge.node --scenario $(printf '%q' "$SCENARIO_PATH") --host $(printf '%q' "$BRIDGE_HOST") --state-port $(printf '%q' "$BRIDGE_STATE_PORT") --command-port $(printf '%q' "$BRIDGE_COMMAND_PORT") & \
+   python3 -m ros2_bridge.node --scenario $(printf '%q' "$SCENARIO_ABS") --host $(printf '%q' "$BRIDGE_HOST") --state-port $(printf '%q' "$BRIDGE_STATE_PORT") --command-port $(printf '%q' "$BRIDGE_COMMAND_PORT") & \
    BRIDGE_PID=\$! && \
    rviz2 -d $(printf '%q' "$RVIZ_CONFIG") && \
    kill \$BRIDGE_PID \$SIM_PID >/dev/null 2>&1 || true && \

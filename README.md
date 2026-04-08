@@ -15,8 +15,6 @@ Top-level workspace for running the airplane SSP and evolving the interactive si
 - Run a waypoint scenario: `./scripts/run_airplane_scenario.sh resources/scenarios/test_scenario.json`
 - Launch the ROS 2 + RViz session: `./scripts/run_rviz_session.sh`
 - Launch the simulator + ROS 2 + RViz entirely inside Podman: `./scripts/run_full_stack_container.sh`
-- Launch FlightGear against the bridge ports: `./scripts/run_flightgear.sh`
-- Launch FlightGear and the simulator together: `./scripts/run_interactive_session.sh`
 - Read the simulation runbook: `docs/simulation_workflow.md`
 
 ## Interactive direction

@@ -6,8 +6,26 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
 def _airplane_root() -> Path:
-    return Path(__file__).resolve().parents[1] / "3rd_party" / "airplane"
+    return repo_root() / "3rd_party" / "airplane"
+
+
+def resolve_scenario_path(path: Path) -> Path:
+    candidates = []
+    if path.is_absolute():
+        candidates.append(path)
+    else:
+        candidates.append(repo_root() / path)
+        candidates.append(_airplane_root() / path)
+        candidates.append(path)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    raise FileNotFoundError(f"Scenario file not found: {path}")
 
 
 def load_local_waypoints(scenario_path: Path) -> List[Dict[str, float]]:
@@ -19,13 +37,25 @@ def load_local_waypoints(scenario_path: Path) -> List[Dict[str, float]]:
 
     from scripts.lib.common.geo import project_waypoints_to_local_km  # type: ignore
 
-    scenario = json.loads(scenario_path.read_text(encoding="utf-8"))
+    scenario = json.loads(resolve_scenario_path(scenario_path).read_text(encoding="utf-8"))
     points = scenario.get("points") or []
     return project_waypoints_to_local_km(points)
 
 
 def parse_state_packet(payload: str) -> Dict[str, Any]:
-    packet = json.loads(payload)
+    decoder = json.JSONDecoder()
+    idx = 0
+    packet = None
+    length = len(payload)
+    while idx < length:
+        while idx < length and payload[idx].isspace():
+            idx += 1
+        if idx >= length:
+            break
+        packet, end = decoder.raw_decode(payload, idx)
+        idx = end
+    if packet is None:
+        raise ValueError("Empty state payload")
     state = packet["state"]
     orientation = packet["orientation"]
     flight_status = packet["flight_status"]
@@ -76,4 +106,3 @@ def encode_control_packet(command: Dict[str, Any]) -> bytes:
         "reserved": int(command.get("reserved", 0)),
     }
     return (json.dumps(packet, separators=(",", ":")) + "\n").encode("utf-8")
-

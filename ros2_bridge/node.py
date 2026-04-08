@@ -7,7 +7,7 @@ import math
 import socket
 from pathlib import Path
 
-from .common import encode_control_packet, load_local_waypoints, parse_state_packet
+from .common import encode_control_packet, load_local_waypoints, parse_state_packet, resolve_scenario_path
 
 
 def _quaternion_from_euler(roll: float, pitch: float, yaw: float) -> tuple[float, float, float, float]:
@@ -38,6 +38,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     try:
         import rclpy
+        from rclpy.executors import ExternalShutdownException
         from geometry_msgs.msg import Point, PoseStamped, TransformStamped
         from nav_msgs.msg import Path as PathMsg
         from std_msgs.msg import String
@@ -47,6 +48,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"ROS 2 Python dependencies are required to run the RViz sidecar: {exc}")
 
     args = parse_args(argv)
+    args.scenario = resolve_scenario_path(args.scenario)
     waypoints = load_local_waypoints(args.scenario)
 
     rclpy.init(args=None)
@@ -210,6 +212,8 @@ def main(argv: list[str] | None = None) -> int:
     node.create_timer(max(1.0 / args.poll_hz, 0.01), poll_bridge)
     try:
         rclpy.spin(node)
+    except ExternalShutdownException:
+        pass
     finally:  # pragma: no branch
         state_socket.close()
         command_socket.close()

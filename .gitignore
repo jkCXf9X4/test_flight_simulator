@@ -56,5 +56,11 @@ tmp_results/
 __pycache__/
 
 CMakeFiles/
+.pytest_cache/
 
 CMakeCache.txt
+
+.cache/
+
+.ros/
+.rviz2/
