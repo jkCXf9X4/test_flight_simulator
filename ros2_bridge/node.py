@@ -27,36 +27,26 @@ def _quaternion_from_euler(roll: float, pitch: float, yaw: float) -> tuple[float
 
 def _compute_visual_scales(waypoints: list[dict[str, float]]) -> dict[str, float]:
     target_span_m = 8000.0
-    if not waypoints:
-        return {
+    base = {
             "mission_span_m": 1000.0,
             "viz_scale": 1.0,
             "route_width_m": 20.0,
-            "waypoint_diameter_m": 120.0,
-            "label_height_m": 70.0,
-            "label_offset_m": 120.0,
-            "aircraft_length_m": 180.0,
+            "waypoint_diameter_m": 30.0,
+            "label_height_m": 200.0,
+            "label_offset_m": 200.0,
+            "aircraft_length_m": 300.0,
         }
+
+    if not waypoints:
+        return base
 
     xs = [point["x_km"] * 1000.0 for point in waypoints]
     ys = [point["y_km"] * 1000.0 for point in waypoints]
-    span_m = max(max(xs) - min(xs), max(ys) - min(ys), 1000.0)
-    viz_scale = max(span_m / target_span_m, 1.0)
-    route_width_m = 20.0
-    waypoint_diameter_m = 120.0
-    label_height_m = 70.0
-    label_offset_m = waypoint_diameter_m * 0.75
-    aircraft_length_m = 180.0
+    base["mission_span_m"] = max(max(xs) - min(xs), max(ys) - min(ys), 1000.0)
+    base["viz_scale"] = max(base["mission_span_m"] / target_span_m, 1.0)
+    base["label_offset_m"] = base["label_height_m"] + base["waypoint_diameter_m"] * 0.50
 
-    return {
-        "mission_span_m": span_m,
-        "viz_scale": viz_scale,
-        "route_width_m": route_width_m,
-        "waypoint_diameter_m": waypoint_diameter_m,
-        "label_height_m": label_height_m,
-        "label_offset_m": label_offset_m,
-        "aircraft_length_m": aircraft_length_m,
-    }
+    return base
 
 
 def _scale_position(point_m: dict[str, float], visual_scales: dict[str, float]) -> tuple[float, float, float]:
@@ -66,6 +56,64 @@ def _scale_position(point_m: dict[str, float], visual_scales: dict[str, float]) 
         point_m["y"] / scale,
         point_m["z"] / scale,
     )
+
+
+def _point(x: float, y: float, z: float) -> object:
+    from geometry_msgs.msg import Point
+
+    point = Point()
+    point.x = x
+    point.y = y
+    point.z = z
+    return point
+
+
+def _build_aircraft_triangles(length_m: float) -> list[object]:
+    half_length = length_m * 0.5
+    wing_span = length_m * 0.34
+    tail_span = length_m * 0.14
+    body_half_width = length_m * 0.045
+    wing_root_x = length_m * 0.02
+    wing_trailing_x = -length_m * 0.16
+    tail_x = -length_m * 0.35
+    body_bottom_z = -length_m * 0.03
+    body_top_z = length_m * 0.03
+    fin_top_z = length_m * 0.12
+
+    nose = _point(half_length, 0.0, 0.0)
+    left_body_front = _point(length_m * 0.15, body_half_width, body_top_z)
+    right_body_front = _point(length_m * 0.15, -body_half_width, body_top_z)
+    left_body_mid = _point(-length_m * 0.12, body_half_width, 0.0)
+    right_body_mid = _point(-length_m * 0.12, -body_half_width, 0.0)
+    tail_tip = _point(-half_length, 0.0, 0.0)
+    body_bottom_front = _point(length_m * 0.05, 0.0, body_bottom_z)
+    body_bottom_rear = _point(-length_m * 0.22, 0.0, body_bottom_z)
+    left_wing_tip = _point(-length_m * 0.02, wing_span, 0.0)
+    right_wing_tip = _point(-length_m * 0.02, -wing_span, 0.0)
+    left_wing_root_front = _point(wing_root_x, body_half_width, 0.0)
+    right_wing_root_front = _point(wing_root_x, -body_half_width, 0.0)
+    left_wing_root_rear = _point(wing_trailing_x, body_half_width * 0.8, 0.0)
+    right_wing_root_rear = _point(wing_trailing_x, -body_half_width * 0.8, 0.0)
+    left_tail_tip = _point(tail_x, tail_span, 0.0)
+    right_tail_tip = _point(tail_x, -tail_span, 0.0)
+    tail_root = _point(-length_m * 0.3, 0.0, 0.0)
+    fin_root_front = _point(-length_m * 0.24, 0.0, 0.0)
+    fin_root_rear = _point(-length_m * 0.42, 0.0, 0.0)
+    fin_top = _point(-length_m * 0.34, 0.0, fin_top_z)
+
+    return [
+        nose, left_body_front, right_body_front,
+        left_body_front, left_body_mid, right_body_front,
+        right_body_front, left_body_mid, right_body_mid,
+        left_body_front, nose, body_bottom_front,
+        right_body_front, body_bottom_front, nose,
+        left_body_mid, body_bottom_rear, right_body_mid,
+        left_wing_root_front, left_wing_tip, left_wing_root_rear,
+        right_wing_root_front, right_wing_root_rear, right_wing_tip,
+        tail_root, left_tail_tip, tail_tip,
+        tail_root, tail_tip, right_tail_tip,
+        fin_root_front, fin_root_rear, fin_top,
+    ]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -202,17 +250,17 @@ def main(argv: list[str] | None = None) -> int:
         marker.header.stamp = pose.header.stamp
         marker.ns = "aircraft"
         marker.id = 0
-        marker.type = Marker.ARROW
+        marker.type = Marker.TRIANGLE_LIST
         marker.action = Marker.ADD
         marker.pose = pose.pose
-        arrow_length_m = visual_scales["aircraft_length_m"]
-        marker.scale.x = arrow_length_m
-        marker.scale.y = arrow_length_m * 0.18
-        marker.scale.z = arrow_length_m * 0.18
+        marker.scale.x = 1.0
+        marker.scale.y = 1.0
+        marker.scale.z = 1.0
+        marker.points = _build_aircraft_triangles(visual_scales["aircraft_length_m"])
         marker.color.a = 0.95
-        marker.color.r = 1.0
-        marker.color.g = 0.82
-        marker.color.b = 0.15
+        marker.color.r = 0.92
+        marker.color.g = 0.92
+        marker.color.b = 0.96
         aircraft_marker_pub.publish(marker)
 
     def publish_pose_and_tf(pose: PoseStamped) -> None:
