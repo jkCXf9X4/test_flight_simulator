@@ -54,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
 
     python_bin = resolve_airplane_python()
 
-    run_step([python_bin, "scripts/workflows/rebuild_from_source.py"], cwd=AIRPLANE_ROOT)
+    run_step([python_bin, "scripts/workflows/rebuild_from_source.py", "--run-simulation"], cwd=AIRPLANE_ROOT)
     run_step(
         [python_bin, "scripts/prepare_local_bundle.py", "--scenario", str(scenario_path)],
         cwd=REPO_ROOT,
