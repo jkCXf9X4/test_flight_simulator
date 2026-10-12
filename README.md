@@ -30,6 +30,7 @@ Other useful entry points:
 - Rebuild SSP/FMU artifacts and refresh the local `build/ssp` bundle: `./scripts/build_airplane.py`
 - Run a batch simulation from the local bundle: `./scripts/run_airplane_scenario.py`
 - Run a realtime batch simulation from the local bundle: `./scripts/run_airplane_scenario.py --realtime`
+- Record a showcase movie of the live RViz stack: `./scripts/record_demo.sh` followed by `./3rd_party/airplane/venv/bin/python3 scripts/render_showcase_movie.py` (see `resources/showcase_scenario.json`)
 - Read the workflow notes: `docs/simulation_workflow.md`
 
 ## Interactive Direction

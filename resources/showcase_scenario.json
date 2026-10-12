@@ -1,0 +1,71 @@
+{
+  "name": "showcase_patrol",
+  "description": "Compact ten-waypoint patrol with climbing and descending doglegs, designed for showcase footage.",
+  "requirements": [
+    "REQ_Performance",
+    "REQ_Control"
+  ],
+  "simulation_overrides": {
+    "cruise_speed_mps": 200.0,
+    "waypoint_proximity_km": 2.5,
+    "target_airspeed_mps": 250.0
+  },
+  "points": [
+    {
+      "latitude_deg": -2.957519,
+      "longitude_deg": 39.232955,
+      "altitude_m": 1500
+    },
+    {
+      "latitude_deg": -2.921483,
+      "longitude_deg": 39.341207,
+      "altitude_m": 3000
+    },
+    {
+      "latitude_deg": -2.849411,
+      "longitude_deg": 39.395333,
+      "altitude_m": 4000
+    },
+    {
+      "latitude_deg": -2.867429,
+      "longitude_deg": 39.485544,
+      "altitude_m": 5000
+    },
+    {
+      "latitude_deg": -2.795357,
+      "longitude_deg": 39.53967,
+      "altitude_m": 6000
+    },
+    {
+      "latitude_deg": -2.723285,
+      "longitude_deg": 39.485544,
+      "altitude_m": 5500
+    },
+    {
+      "latitude_deg": -2.741303,
+      "longitude_deg": 39.395333,
+      "altitude_m": 5000
+    },
+    {
+      "latitude_deg": -2.669231,
+      "longitude_deg": 39.341207,
+      "altitude_m": 6500
+    },
+    {
+      "latitude_deg": -2.597159,
+      "longitude_deg": 39.395333,
+      "altitude_m": 7500
+    },
+    {
+      "latitude_deg": -2.615177,
+      "longitude_deg": 39.485544,
+      "altitude_m": 8000
+    },
+    {
+      "latitude_deg": -2.543105,
+      "longitude_deg": 39.53967,
+      "altitude_m": 7000
+    }
+  ],
+  "total_distance_km": 129.66
+}

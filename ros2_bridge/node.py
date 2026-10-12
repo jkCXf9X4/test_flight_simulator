@@ -25,8 +25,7 @@ def _quaternion_from_euler(roll: float, pitch: float, yaw: float) -> tuple[float
     )
 
 
-def _compute_visual_scales(waypoints: list[dict[str, float]]) -> dict[str, float]:
-    target_span_m = 8000.0
+def _compute_visual_scales(waypoints: list[dict[str, float]], target_span_m: float = 8000.0) -> dict[str, float]:
     base = {
             "mission_span_m": 1000.0,
             "viz_scale": 1.0,
@@ -123,6 +122,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--command-port", type=int, default=5502)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--poll-hz", type=float, default=20.0)
+    parser.add_argument(
+        "--viz-span-units",
+        type=float,
+        default=8000.0,
+        help="Mission span in RViz units; smaller values zoom in and make aircraft motion more visible.",
+    )
     return parser.parse_args(argv)
 
 
@@ -142,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     args.scenario = resolve_scenario_path(args.scenario)
     waypoints = load_local_waypoints(args.scenario)
-    visual_scales = _compute_visual_scales(waypoints)
+    visual_scales = _compute_visual_scales(waypoints, args.viz_span_units)
 
     rclpy.init(args=None)
     node = rclpy.create_node("test_flight_simulator_ros2_bridge")
