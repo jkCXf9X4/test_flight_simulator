@@ -42,7 +42,7 @@ check_host_ros_python() {
 
 check_airplane_venv() {
   [[ -x "$AIRPLANE_ROOT/venv/bin/python3" ]] || fail "airplane virtualenv is missing at $AIRPLANE_ROOT/venv"
-  "$AIRPLANE_ROOT/venv/bin/python3" -c "import pycps_sysmlv2" >/dev/null 2>&1 || fail "airplane virtualenv is missing required build dependencies"
+  "$AIRPLANE_ROOT/venv/bin/python3" -c "import pycps_sysml2" >/dev/null 2>&1 || fail "airplane virtualenv is missing required build dependencies (pycps_sysml2; airplane SysML pipeline not migrated yet)"
 }
 
 case "$MODE" in
