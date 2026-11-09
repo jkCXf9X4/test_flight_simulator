@@ -24,6 +24,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--realtime", action="store_true", help="Run the prepared realtime config.")
     parser.add_argument("--stop-time", type=float, default=None, help="Override stop time for this run only.")
+    parser.add_argument("--recording-interval", type=float, default=None, help="Override CSV recording interval in seconds.")
     return parser.parse_args(argv)
 
 
@@ -48,9 +49,16 @@ def load_local_config(realtime: bool) -> Path:
     return config_path
 
 
-def write_runtime_override(base_config_path: Path, stop_time: float) -> Path:
+def write_runtime_override(
+    base_config_path: Path,
+    stop_time: float | None = None,
+    recording_interval: float | None = None,
+) -> Path:
     config = json.loads(base_config_path.read_text(encoding="utf-8"))
-    config["simulation"]["stop_time"] = float(stop_time)
+    if stop_time is not None:
+        config["simulation"]["stop_time"] = float(stop_time)
+    if recording_interval is not None:
+        config["simulation"]["recording"]["csv"]["interval"] = float(recording_interval)
     RUNTIME_CONFIG_PATH.write_text(json.dumps(config, indent=2), encoding="utf-8")
     return RUNTIME_CONFIG_PATH
 
@@ -58,8 +66,8 @@ def write_runtime_override(base_config_path: Path, stop_time: float) -> Path:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     config_path = load_local_config(args.realtime)
-    if args.stop_time is not None:
-        config_path = write_runtime_override(config_path, args.stop_time)
+    if args.stop_time is not None or args.recording_interval is not None:
+        config_path = write_runtime_override(config_path, args.stop_time, args.recording_interval)
 
     python_bin = resolve_airplane_python()
     env = os.environ.copy()

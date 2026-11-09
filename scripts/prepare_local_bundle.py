@@ -103,12 +103,12 @@ def main(argv: list[str] | None = None) -> int:
         parameter_set_path=prepared.parameter_set_path,
         scenario_stem="scenario",
         results_dir=bundle_dir,
+        ssm_path=prepared.ssm_path,
+        analysis_descriptor_path=prepared.analysis_descriptor_path,
     )
     shutil.copy2(generated_prepared_ssp, local_prepared_ssp_path)
 
     run_dir = bundle_dir / "scenario_run"
-    if run_dir.exists():
-        shutil.rmtree(run_dir)
 
     stop_time_s = resolve_stop_time_s(prepared.scenario, prepared.total_distance_km, prepared.cruise_speed_mps)
 
@@ -117,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
         result_file=config_result_path,
         stop_time=stop_time_s,
         realtime=False,
+        recording_interval=0.25,
     )
     write_simulation_config(config=config, result_file=config_result_path, config_path=local_config_path)
 
@@ -125,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         result_file=config_realtime_result_path,
         stop_time=stop_time_s,
         realtime=True,
+        recording_interval=0.25,
     )
     write_simulation_config(
         config=realtime_config,
@@ -143,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
         "config_realtime": str(local_realtime_config_path),
         "parameter_set": str(prepared.parameter_set_path),
         "waypoints": str(prepared.waypoints_file),
+        "analysis_descriptor": str(run_dir / "analysis.json"),
         "stop_time_s": stop_time_s,
     }
     print(json.dumps(summary, indent=2))
