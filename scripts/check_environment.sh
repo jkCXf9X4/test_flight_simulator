@@ -40,9 +40,17 @@ check_host_ros_python() {
   python3 -c "import ros2_bridge.node" >/dev/null 2>&1 || fail "python3 cannot import ros2_bridge.node on the host"
 }
 
-check_airplane_venv() {
-  [[ -x "$AIRPLANE_ROOT/venv/bin/python3" ]] || fail "airplane virtualenv is missing at $AIRPLANE_ROOT/venv"
-  "$AIRPLANE_ROOT/venv/bin/python3" -c "import pycps_sysml2" >/dev/null 2>&1 || fail "airplane virtualenv is missing required build dependencies (pycps_sysml2; airplane SysML pipeline not migrated yet)"
+check_airplane_python() {
+  local py
+  if [[ -x "$AIRPLANE_ROOT/venv/bin/python3" ]]; then
+    py="$AIRPLANE_ROOT/venv/bin/python3"
+  elif command -v python3 >/dev/null 2>&1; then
+    py="$(command -v python3)"
+  else
+    fail "python3 is not available on PATH"
+  fi
+  "$py" -c "import pyssp_sysml2" >/dev/null 2>&1 \
+    || fail "python3 cannot import pyssp_sysml2 (airplane build dependency). Activate a venv with the airplane build deps installed (see AGENTS.md)."
 }
 
 case "$MODE" in
@@ -52,7 +60,7 @@ case "$MODE" in
     check_x11
     ;;
   --source-build)
-    check_airplane_venv
+    check_airplane_python
     ;;
   --host-ros-python)
     check_host_ros_python
