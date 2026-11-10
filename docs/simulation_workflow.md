@@ -55,7 +55,7 @@ Where:
 
 ## Current bridge implementation
 
-The bridge remains a native FMI 2.0 co-simulation FMU in C++, but it now emits newline-delimited JSON state packets for a ROS 2 companion runtime rather than FlightGear generic CSV.
+The bridge is a native FMI 2.0 co-simulation FMU in C++ (`Ros2UdpBridge`) that acts as a UDP telemetry/control adapter to a ROS 2 / RViz companion runtime, emitting newline-delimited JSON state packets.
 
 Current behavior:
 
@@ -77,10 +77,10 @@ Containerized launcher behavior:
 
 Implementation/build notes:
 
-- the FMU is built from `3rd_party/airplane/models/flightgear_bridge/native/`
-- the generated FMU is written to `3rd_party/airplane/build/fmus/FlightGearBridge.fmu`
+- the FMU is built from `3rd_party/airplane/models/ros2_udp_bridge/native/`
+- the generated FMU is written to `3rd_party/airplane/build/fmus/Ros2UdpBridge.fmu`
 - the shared library exports the standard FMI 2 `fmi2*` entry points so `pyssp4sim` can import it directly
-- `3rd_party/airplane/tests/test_flightgear_bridge_fmu.py` now verifies the JSON bridge packet and control pass-through path
+- `3rd_party/airplane/tests/test_ros2_udp_bridge_fmu.py` now verifies the JSON bridge packet and control pass-through path
 
 ## Timing approach
 
@@ -102,12 +102,11 @@ Planned follow-up work, but explicitly not part of the initial implementation:
 
 The aircraft package now includes the native bridge in the packaged SSP workflow:
 
-- the dedicated `FlightGearBridge` component is part of the aircraft architecture and SSD
+- the dedicated `Ros2UdpBridge` component is part of the aircraft architecture and SSD
 - the bridge is packaged as a native C++ FMU alongside the Modelica-exported subsystem FMUs
 - bridge-produced pilot commands enter through `ControlInterface`
 - top-level scripts build the SSP and can run a scenario while the bridge emits live UDP telemetry
 
 ## Expected next implementation steps
 
-1. Simplify the bridge/FMUs naming away from the historical FlightGear identifier.
-2. Add a ROS-native operator runbook for manual command publishers and RViz usage.
+1. Add a ROS-native operator runbook for manual command publishers and RViz usage.
