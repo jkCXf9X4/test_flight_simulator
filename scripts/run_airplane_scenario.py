@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -33,10 +32,9 @@ def resolve_airplane_python() -> str:
     if venv_python.exists():
         return str(venv_python)
 
-    python = shutil.which("python3")
-    if python is None:
-        raise SystemExit("python3 is not available on PATH.")
-    return python
+    # Prefer the interpreter running this script so the venv that invoked
+    # run_airplane_scenario.py carries its deps into the subprocess.
+    return sys.executable
 
 
 def load_local_config(realtime: bool) -> Path:
