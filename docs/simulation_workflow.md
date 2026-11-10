@@ -78,7 +78,7 @@ Containerized launcher behavior:
 Implementation/build notes:
 
 - the FMU is built from `3rd_party/airplane/models/flightgear_bridge/native/`
-- the generated FMU is written to `3rd_party/airplane/build/fmus/Aircraft_FlightGearBridge.fmu`
+- the generated FMU is written to `3rd_party/airplane/build/fmus/FlightGearBridge.fmu`
 - the shared library exports the standard FMI 2 `fmi2*` entry points so `pyssp4sim` can import it directly
 - `3rd_party/airplane/tests/test_flightgear_bridge_fmu.py` now verifies the JSON bridge packet and control pass-through path
 
@@ -96,7 +96,7 @@ Planned follow-up work, but explicitly not part of the initial implementation:
 ## Where design ownership lives
 
 - Repo-level operational workflow: this document
-- Aircraft-side architecture notes: `3rd_party/airplane/architecture/simulation.sysml`
+- Aircraft-side architecture notes: `3rd_party/airplane/architecture/aircraft.sysml`
 
 ## Current aircraft adaptation status
 

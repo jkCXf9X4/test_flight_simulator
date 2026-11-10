@@ -80,5 +80,5 @@ wait "$FFMPEG_PID" || true
 
 echo "STACK_STATUS=$STACK_STATUS"
 echo "Raw capture: $CAPTURE"
-echo "Next: ./3rd_party/airplane/venv/bin/python3 scripts/render_showcase_movie.py"
+echo "Next: /home/eriro/pwa/2_work/flight_sim/venv/bin/python3 scripts/render_showcase_movie.py"
 exit "$STACK_STATUS"
