@@ -10,13 +10,20 @@ Top-level workspace for running the airplane SSP and evolving the interactive si
 
 ## Just Works
 
-The supported live workflow is containerized.
+The supported live workflow is ROS-free: `ssp4sim` runs on the host and the Rerun viewer renders the bridge's UDP telemetry.
 
 ```bash
-./scripts/check_environment.sh --live-container
 ./scripts/build_airplane.py
-./scripts/build_ros2_container.sh
-./scripts/run_full_stack_container.sh
+./scripts/run_rerun_stack.sh
+```
+
+`run_rerun_stack.sh` starts `./scripts/run_airplane_scenario.py --realtime`, waits for the realtime telemetry file to advance, then runs `python -m dis_viewer --source json-udp --sink rerun --spawn` with the repo venv.
+
+To run the viewer inside Podman instead of on the host, build the image and opt in:
+
+```bash
+./scripts/build_rerun_container.sh
+RERUN_CONTAINER=1 ./scripts/run_rerun_stack.sh
 ```
 
 Seed the local bundle with a different scenario during build:
@@ -30,9 +37,12 @@ Other useful entry points:
 - Rebuild SSP/FMU artifacts and refresh the local `build/ssp` bundle: `./scripts/build_airplane.py`
 - Run a batch simulation from the local bundle: `./scripts/run_airplane_scenario.py`
 - Run a realtime batch simulation from the local bundle: `./scripts/run_airplane_scenario.py --realtime`
-- Record a showcase movie of the live RViz stack: `./scripts/record_demo.sh` followed by `/home/eriro/pwa/2_work/flight_sim/venv/bin/python3 scripts/render_showcase_movie.py` (see `resources/showcase_scenario.json`)
+- Headless Rerun smoke test (no X11, no Podman): `./scripts/container_rerun_smoke.sh`
+- Manual pilot input on UDP 5502: `./scripts/send_pilot_command.py --pitch 0.2 --duration 5`
 - Read the workflow notes: `docs/simulation_workflow.md`
 
 ## Interactive Direction
 
-The supported live setup keeps `ssp4sim` as the simulation master and runs RViz plus the ROS 2 bridge runtime inside a Podman container. The bridge FMU publishes a ROS-oriented UDP packet to the Python ROS 2 companion runtime. Repo-level operational notes live in `docs/simulation_workflow.md`.
+The supported live setup keeps `ssp4sim` as the simulation master on the host. The native bridge FMU still emits newline-delimited JSON telemetry on UDP 5501; `dis_viewer` consumes it and renders with Rerun. Manual pilot commands go to UDP 5502 through `scripts/send_pilot_command.py`.
+
+The ROS 2 / RViz stack is deprecated. Its scripts, `ros2_bridge/node.py` and the RViz config are kept until the scheduled removal, but new work should use the Rerun path.
