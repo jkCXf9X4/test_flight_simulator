@@ -153,6 +153,7 @@ def telemetry_to_state(
     packet: Mapping[str, Any],
     *,
     key: EntityKey,
+    marking: str,
     timestamp: float,
     period_s: float,
     previous: tuple[tuple[float, float, float], tuple[float, float, float]] | None,
@@ -189,7 +190,7 @@ def telemetry_to_state(
         velocity_enu_mps=velocity,
         orientation_rps=orientation,
         angular_velocity_rps=angular,
-        marking=f"AC-{key.entity}"[:11],
+        marking=marking[:11],
     )
 
 
@@ -207,12 +208,14 @@ class TelemetryRprPublisher(threading.Thread):
         rpr_host: str,
         rpr_port: int,
         sample_period_s: float = SAMPLE_PERIOD_S,
+        marking: str = "",
     ) -> None:
         super().__init__(name=name, daemon=True)
         self.telemetry_host = telemetry_host
         self.telemetry_port = int(telemetry_port)
         self.key = key
         self.origin = origin
+        self.marking = (marking or f"AC-{key.entity}")[:11]
         self.rpr_host = rpr_host
         self.rpr_port = int(rpr_port)
         self.sample_period_s = float(sample_period_s)
@@ -234,6 +237,7 @@ class TelemetryRprPublisher(threading.Thread):
         state = telemetry_to_state(
             packet,
             key=self.key,
+            marking=self.marking,
             timestamp=self._ordinal * self.sample_period_s,
             period_s=self.sample_period_s,
             previous=self._previous,
@@ -733,6 +737,7 @@ def run_e2e(
                 telemetry_port=endpoint.port,
                 key=key,
                 origin=origin,
+                marking=ref.marking,
                 rpr_host="127.0.0.1",
                 rpr_port=rpr_port,
             )

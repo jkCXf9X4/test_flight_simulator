@@ -15,6 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import instance_manifest
 import pytest
 import rpr_e2e
 
@@ -173,6 +174,12 @@ def test_four_aircraft_federation_runs_distinct_scenarios(tmp_path):
 
     metadata = json.loads(result.metadata_json.read_text(encoding="utf-8"))
     assert {entity["entity"] for entity in metadata["entities"]} == slugs
+    assert {entity["marking"] for entity in metadata["entities"]} == {
+        "RED-1",
+        "RED-2",
+        "BLUE-1",
+        "BLUE-2",
+    }
     assert metadata["sample_count"] == result.samples
 
     labels = _label_texts(result.rrd_path)
@@ -229,7 +236,7 @@ def _telemetry_packet(
     }
 
 
-def _publisher():
+def _publisher(marking=""):
     return rpr_e2e.TelemetryRprPublisher(
         name="test-publisher",
         telemetry_host="127.0.0.1",
@@ -238,7 +245,17 @@ def _publisher():
         origin=rpr_e2e.RprOrigin(latitude_deg=0.0, longitude_deg=0.0, altitude_m=0.0),
         rpr_host="127.0.0.1",
         rpr_port=0,
+        marking=marking,
     )
+
+
+def _roundtrip_marking(publisher):
+    state = publisher._next_state(
+        _telemetry_packet(position_m=(100.0, 0.0, 1000.0))
+    )
+    assert state is not None
+    data = rpr_e2e.encode_entity_state(state, origin=publisher.origin)
+    return rpr_e2e.decode_frame(data, origin=publisher.origin).state.marking
 
 
 def test_publisher_skips_only_leading_preinit_record():
@@ -307,4 +324,20 @@ def test_publisher_does_not_drop_all_zero_packet_after_publication():
     assert zero_after is not None
     assert zero_after.timestamp == pytest.approx(0.1)
     assert zero_after.position_enu_m == (0.0, 0.0, 0.0)
+
+
+def test_publisher_uses_manifest_marking_in_encoded_frame():
+    spec = instance_manifest.load_spec(SOS_MANIFEST)
+    marking = next(
+        ref.marking
+        for instance in spec.instances
+        for ref in instance.entities
+        if ref.marking == "RED-1"
+    )
+
+    assert _roundtrip_marking(_publisher(marking=marking)) == "RED-1"
+
+
+def test_publisher_falls_back_to_ac_marking_when_manifest_marking_empty():
+    assert _roundtrip_marking(_publisher(marking="")) == "AC-1"
 
