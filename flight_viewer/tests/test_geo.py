@@ -4,8 +4,8 @@ import math
 
 import pytest
 
-from dis_viewer.config import Origin
-from dis_viewer.geo import (
+from flight_viewer.config import Origin
+from flight_viewer.geo import (
     WGS84_A,
     WGS84_E2,
     body_rates_to_euler_rates,

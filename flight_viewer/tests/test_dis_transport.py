@@ -7,8 +7,8 @@ import socket
 
 import pytest
 
-from dis_viewer.config import TransportConfig
-from dis_viewer.transport import open_channel
+from flight_viewer.config import TransportConfig
+from flight_viewer.transport import open_channel
 
 
 def free_udp_port() -> int:

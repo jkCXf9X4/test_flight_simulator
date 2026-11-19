@@ -1,8 +1,8 @@
 """UDP source for the bridge's newline-delimited JSON telemetry.
 
 The parser is a local, pure-Python copy of the rules in
-``ros2_bridge/common.py:parse_state_packet``; importing that module would pull
-in the ROS 2 workspace and ``rclpy`` is forbidden in ``dis_viewer``.
+``bridge_contract/common.py:parse_state_packet`` so the viewer has no dependency
+on the bridge workspace.
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ def _normalise_packet(packet: Dict[str, Any]) -> Dict[str, Any]:
     flight_status = packet["flight_status"]
     mission_status = packet["mission_status"]
     return {
-        "transport": packet.get("transport", "Ros2UdpBridge"),
+        "transport": packet.get("transport", "UdpBridge"),
         "reference_latitude_deg": float(packet["reference_latitude_deg"]),
         "reference_longitude_deg": float(packet["reference_longitude_deg"]),
         "reference_altitude_m": float(packet["reference_altitude_m"]),

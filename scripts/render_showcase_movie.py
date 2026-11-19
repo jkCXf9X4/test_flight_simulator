@@ -283,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
 
     title_png = demo_dir / "title_card.png"
     end_png = demo_dir / "end_card.png"
-    render_card(title_png, heading, ["FMI co-simulation · SSP · ROS 2 / RViz", f"recorded live · time-lapsed {speedup:.1f}×"])
+    render_card(title_png, heading, ["FMI co-simulation · SSP · Rerun", f"recorded live · time-lapsed {speedup:.1f}×"])
     render_card(end_png, end_heading, end_lines)
 
     title_card = demo_dir / "title_card.mp4"

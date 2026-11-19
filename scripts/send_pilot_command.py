@@ -2,9 +2,9 @@
 """Manual pilot input shim for the ROS-free stack.
 
 Sends newline-delimited JSON control packets to the bridge FMU's UDP command
-port (default 127.0.0.1:5502), replacing the ROS 2 subscription. The packet
-encoder is reused from ``ros2_bridge.common.encode_control_packet``; that module
-is pure Python and does not import rclpy.
+port (default 127.0.0.1:5502), replacing the earlier command subscription. The
+packet encoder is reused from ``bridge_contract.common.encode_control_packet``;
+that module is pure Python.
 
 Interactive stdin (TTY) accepts one update per line, either ``key=value`` tokens
 using the flag names below or a raw JSON object with the packet field names.
@@ -29,7 +29,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from ros2_bridge.common import encode_control_packet  # noqa: E402
+from bridge_contract.common import encode_control_packet  # noqa: E402
 
 ALIASES = {
     "pitch": "stick_pitch_norm",

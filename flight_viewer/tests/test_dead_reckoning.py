@@ -4,8 +4,8 @@ import math
 
 import pytest
 
-from dis_viewer.dead_reckoning import dead_reckon, is_stale
-from dis_viewer.model import EntityKey, EntityState
+from flight_viewer.dead_reckoning import dead_reckon, is_stale
+from flight_viewer.model import EntityKey, EntityState
 
 KEY = EntityKey(1, 1, 7)
 START_S = 10.0

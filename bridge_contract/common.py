@@ -1,4 +1,4 @@
-"""Pure-Python helpers shared by the ROS 2 bridge node and tests."""
+"""Pure-Python helpers shared by the UDP bridge and tests."""
 from __future__ import annotations
 
 import json
@@ -61,7 +61,7 @@ def parse_state_packet(payload: str) -> Dict[str, Any]:
     flight_status = packet["flight_status"]
     mission_status = packet["mission_status"]
     return {
-        "transport": packet.get("transport", "Ros2UdpBridge"),
+        "transport": packet.get("transport", "UdpBridge"),
         "reference_latitude_deg": float(packet["reference_latitude_deg"]),
         "reference_longitude_deg": float(packet["reference_longitude_deg"]),
         "reference_altitude_m": float(packet["reference_altitude_m"]),

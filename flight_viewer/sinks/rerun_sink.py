@@ -16,10 +16,12 @@ from typing import Iterable, Optional
 from pysos_interop.rerun_sink import (
     ENTITY_LEAVES,
     STATUS_LEAVES,
-    RerunSink as _SharedRerunSink,
     entity_path,
     entity_slug,
     rpy_rad_to_quaternion,
+)
+from pysos_interop.rerun_sink import (
+    RerunSink as _SharedRerunSink,
 )
 
 from ..config import Origin
@@ -40,7 +42,7 @@ class RerunSink(_SharedRerunSink):
 
     def __init__(
         self,
-        app_id: str = "dis_viewer",
+        app_id: str = "flight_viewer",
         rrd_path: Optional[Path] = None,
         spawn: bool = False,
         origin: Optional[Origin] = None,
@@ -48,7 +50,7 @@ class RerunSink(_SharedRerunSink):
         self._temporary: Optional[Path] = None
         if rrd_path is None:
             handle, temporary = tempfile.mkstemp(
-                prefix="dis_viewer_", suffix=".rrd"
+                prefix="flight_viewer_", suffix=".rrd"
             )
             os.close(handle)
             self._temporary = Path(temporary)

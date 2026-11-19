@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import math
 
-from dis_viewer.model import EntityKey, EntityState
-from dis_viewer.sinks.rerun_sink import (
+from flight_viewer.model import EntityKey, EntityState
+from flight_viewer.sinks.rerun_sink import (
     ENTITY_LEAVES,
     RerunSink,
     entity_path,

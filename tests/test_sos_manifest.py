@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
-import generate_sos_manifest
 from pysos_coordinate import Federation, FederationSpec
 
-MANIFEST = generate_sos_manifest.DEFAULT_MANIFEST
-SCENARIO_DIR = Path(__file__).resolve().parents[1] / "3rd_party" / "airplane" / "resources" / "scenarios"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SYSML = REPO_ROOT / "sos" / "aircraft_federation.sysml"
+MANIFEST = REPO_ROOT / "manifests" / "aircraft_federation.manifest.json"
+SCENARIO_DIR = REPO_ROOT / "3rd_party" / "airplane" / "resources" / "scenarios"
 RPR_PORT = 5505
 
 EXPECTED = {
@@ -20,20 +23,31 @@ EXPECTED = {
 }
 
 
+def _manifest_cli(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "pysos_sysml", "manifest", *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def _manifest_json() -> dict:
     return json.loads(MANIFEST.read_text(encoding="utf-8"))
 
 
 def test_checked_in_manifest_matches_fresh_lowering():
-    text = MANIFEST.read_text(encoding="utf-8")
-    assert text == generate_sos_manifest.render()
-    assert generate_sos_manifest.main(["--check"]) == 0
+    fresh = _manifest_cli(str(SYSML))
+    assert fresh.returncode == 0, fresh.stderr
+    assert MANIFEST.read_text(encoding="utf-8") == fresh.stdout
+    check = _manifest_cli(str(SYSML), "-o", str(MANIFEST), "--check")
+    assert check.returncode == 0, check.stderr
 
 
 def test_generator_reports_stale_manifest(tmp_path):
     stale = tmp_path / "stale.manifest.json"
     stale.write_text("{}\n", encoding="utf-8")
-    assert generate_sos_manifest.main(["--check", "--out", str(stale)]) == 1
+    assert _manifest_cli(str(SYSML), "-o", str(stale), "--check").returncode == 1
 
 
 def test_manifest_is_accepted_by_coordinate_and_constructs():

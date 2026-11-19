@@ -14,7 +14,7 @@ already owns:
 The dedicated RPR port is ``5505``; it is deliberately outside the instance
 port range 5510-5517. RPR has no timestamp field, so the recorder stamps each
 decoded frame from its per-entity ordinal at the bridge's 10 Hz cadence
-(``SAMPLE_PERIOD_S``) and fans samples in through :class:`rpr_fanin.SampleFanIn`,
+(``SAMPLE_PERIOD_S``) and fans samples in through :class:`pysos_interop.fanin.SampleFanIn`,
 whose watchdog flushes a partial sample instead of waiting forever for a missing
 entity. Aircraft stay peerless: each publisher reads only its own instance's
 telemetry, and the recorder is the sole fan-in point.
@@ -72,14 +72,14 @@ from pysos_interop import (
     euler_rates_to_body_rates,
     export_measure_csv,
 )
+from pysos_interop.fanin import DEFAULT_WATCHDOG_S, SampleFanIn, sample_timestamp
 from pysos_interop.rerun_sink import recordings_to_rrd
 from pysos_interop.rpr import RprOrigin, decode_frame, encode_entity_state
 from pysos_interop.transport import Channel
 from pysos_interop.truth import MEASURE_UNITS, entity_slug, iter_truth
-from rpr_fanin import DEFAULT_WATCHDOG_S, SampleFanIn
 
-from dis_viewer.geo import local_sim_to_enu
-from dis_viewer.sources.json_udp import parse_state_packets
+from flight_viewer.geo import local_sim_to_enu
+from flight_viewer.sources.json_udp import parse_state_packets
 
 #: Dedicated RPR UDP port. Never overlaps the federation telemetry/control ports.
 RPR_UDP_PORT = 5505
@@ -209,30 +209,6 @@ def _yaw_unwrapped(previous: float, current: float) -> float:
     return current + math.remainder(previous - current, 2.0 * math.pi)
 
 
-def _is_preinit_packet(packet: Mapping[str, Any]) -> bool:
-    """Return True for the bridge's pre-initialisation all-zero record.
-
-    The bridge FMU emits one packet before its connected inputs are applied, so
-    at simulation t=0 position, airspeed, climb rate, and the whole mission block
-    still read zero. Publishing that record would add a phantom origin sample and
-    make the finite-difference velocity on the next packet enormous, so the
-    publisher drops leading records that match this exact shape.
-    """
-
-    flight = packet["flight_status"]
-    mission = packet["mission_status"]
-    return (
-        all(float(value) == 0.0 for value in packet["state_m"])
-        and float(flight["airspeed_mps"]) == 0.0
-        and float(flight["climb_rate"]) == 0.0
-        and float(mission["distance_to_waypoint_km"]) == 0.0
-        and int(mission["waypoint_index"]) == 0
-        and int(mission["total_waypoints"]) == 0
-        and not bool(mission["arrived"])
-        and not bool(mission["complete"])
-    )
-
-
 def telemetry_to_state(
     packet: Mapping[str, Any],
     *,
@@ -309,7 +285,7 @@ class TelemetryRprPublisher(threading.Thread):
         self.telemetry_datagrams = 0
         #: Telemetry records parsed out of those datagrams.
         self.telemetry_packets = 0
-        #: Records published as RPR payloads (leading pre-init record excluded).
+        #: Records published as RPR payloads.
         self.sent = 0
         self.error: BaseException | None = None
         self.error_traceback = ""
@@ -318,16 +294,14 @@ class TelemetryRprPublisher(threading.Thread):
             tuple[tuple[float, float, float], tuple[float, float, float]] | None
         ) = None
 
-    def _next_state(self, packet: Mapping[str, Any]) -> EntityState | None:
-        """Return the state for one packet, or None for a leading pre-init record."""
+    def _next_state(self, packet: Mapping[str, Any]) -> EntityState:
+        """Return the state for one telemetry packet."""
 
-        if self.sent == 0 and _is_preinit_packet(packet):
-            return None
         state = telemetry_to_state(
             packet,
             key=self.key,
             marking=self.marking,
-            timestamp=self._ordinal * self.sample_period_s,
+            timestamp=sample_timestamp(self._ordinal, self.sample_period_s),
             period_s=self.sample_period_s,
             previous=self._previous,
         )
@@ -357,10 +331,11 @@ class TelemetryRprPublisher(threading.Thread):
                     self.telemetry_datagrams += 1
                     for packet in parse_state_packets(datagram.decode("utf-8", "replace")):
                         self.telemetry_packets += 1
-                        state = self._next_state(packet)
-                        if state is None:
-                            continue
-                        sender.send(encode_entity_state(state, origin=self.origin))
+                        sender.send(
+                            encode_entity_state(
+                                self._next_state(packet), origin=self.origin
+                            )
+                        )
         except BaseException as exc:  # noqa: BLE001 - reported to the orchestrator
             self.error = exc
             self.error_traceback = traceback.format_exc()
@@ -449,7 +424,7 @@ class RprTruthRecorder(threading.Thread):
                         raise
                     slug = entity_slug(frame.state.key)
                     self.frames[slug] += 1
-                    timestamp = self.fan_in.ordinals[slug] * self.sample_period_s
+                    timestamp = sample_timestamp(self.fan_in.ordinals[slug], self.sample_period_s)
                     self.fan_in.observe(
                         slug, dataclasses.replace(frame.state, timestamp=timestamp)
                     )

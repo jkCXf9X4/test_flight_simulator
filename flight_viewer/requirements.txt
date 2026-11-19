@@ -1,0 +1,3 @@
+rerun-sdk==0.43.2
+opendis==1.1.0
+pysos-interop @ https://github.com/pyssporg/pysos_interop/releases/download/v0.4.0/pysos_interop-0.4.0-py3-none-any.whl

@@ -17,7 +17,7 @@ The supported live workflow is ROS-free: `ssp4sim` runs on the host and the Reru
 ./scripts/run_rerun_stack.sh
 ```
 
-`run_rerun_stack.sh` starts `./scripts/run_airplane_scenario.py --realtime`, waits for the realtime telemetry file to advance, then runs `python -m dis_viewer --source json-udp --sink rerun --spawn` with the repo venv.
+`run_rerun_stack.sh` starts `./scripts/run_airplane_scenario.py --realtime`, waits for the realtime telemetry file to advance, then runs `python -m flight_viewer --source json-udp --sink rerun --spawn` with the repo venv.
 
 To run the viewer inside Podman instead of on the host, build the image and opt in:
 
@@ -45,6 +45,6 @@ Other useful entry points:
 
 ## Interactive Direction
 
-The supported live setup keeps `ssp4sim` as the simulation master on the host. The native bridge FMU still emits newline-delimited JSON telemetry on UDP 5501; `dis_viewer` consumes it and renders with Rerun. Manual pilot commands go to UDP 5502 through `scripts/send_pilot_command.py`.
+The supported live setup keeps `ssp4sim` as the simulation master on the host. The native bridge FMU still emits newline-delimited JSON telemetry on UDP 5501; `flight_viewer` consumes it and renders with Rerun. Manual pilot commands go to UDP 5502 through `scripts/send_pilot_command.py`.
 
-The ROS 2 / RViz runtime has been retired. The live stack is the Rerun viewer described above; the native bridge FMU keeps the legacy `Ros2UdpBridge` name for its unchanged UDP telemetry/control contract.
+The RViz runtime has been retired. The live stack is the Rerun viewer described above; the native `UdpBridge` FMU keeps its unchanged UDP telemetry/control contract. The viewer's default path is JSON telemetry over UDP; DIS is an optional codec from `pysos_interop`.

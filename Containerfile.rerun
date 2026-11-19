@@ -1,6 +1,6 @@
 FROM docker.io/library/python:3.11-slim
 
-# ROS-free runtime: the Rerun viewer plus the dis_viewer adapter. No ROS, no
+# ROS-free runtime: the Rerun viewer plus the flight_viewer adapter. No ROS, no
 # colcon, no rclpy. The simulation itself stays on the host.
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -40,11 +40,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /workspace
 
-# Requirements first so dependency layers survive dis_viewer edits.
-COPY dis_viewer/requirements.txt /tmp/dis_viewer/requirements.txt
-RUN python -m pip install --no-cache-dir -r /tmp/dis_viewer/requirements.txt pytest
+# Requirements first so dependency layers survive flight_viewer edits.
+COPY flight_viewer/requirements.txt /tmp/flight_viewer/requirements.txt
+RUN python -m pip install --no-cache-dir -r /tmp/flight_viewer/requirements.txt pytest
 
 # Standalone copy; the launcher bind-mounts the checkout over /workspace.
-COPY dis_viewer /workspace/dis_viewer
+COPY flight_viewer /workspace/flight_viewer
 
-ENTRYPOINT ["python", "-m", "dis_viewer"]
+ENTRYPOINT ["python", "-m", "flight_viewer"]

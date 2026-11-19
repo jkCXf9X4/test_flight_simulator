@@ -1,6 +1,6 @@
-# DIS viewer adapter — implementation plan
+# Viewer adapter — implementation plan
 
-Goal: a multi-entity view of the simulation without ROS. Sibling entities broadcast
+Goal: a multi-entity view of the simulation over plain UDP. Sibling entities broadcast
 DIS entity-state PDUs; one adapter parses them into a neutral entity state; Rerun
 renders the live and recorded view.
 
@@ -9,7 +9,7 @@ detailed meshes are explicitly out of scope.
 
 ## Architecture
 
-- DIS lives in a sidecar Python process (`dis_viewer/`), not inside the 0.1 s
+- DIS lives in a sidecar Python process (`flight_viewer/`), not inside the 0.1 s
   Jacobi step loop of the FMI/SSP master.
 - The sim keeps its existing UDP JSON telemetry contract (port 5501) and control
   contract (port 5502). The adapter is the only new consumer.
@@ -21,7 +21,7 @@ detailed meshes are explicitly out of scope.
 
 ## Contracts
 
-Normative details live in `docs/dis_contract.md`. Freeze before code:
+Normative details live in `docs/viewer_contract.md`. Freeze before code:
 
 - entity identity `(site, application, entity)`, unique per exercise;
 - exercise id and force id, both configurable;
@@ -34,7 +34,7 @@ Normative details live in `docs/dis_contract.md`. Freeze before code:
 
 ## Milestones
 
-M0 — contracts, 1 day. Exit: `docs/dis_contract.md` frozen, one golden ESPDU
+M0 — contracts, 1 day. Exit: `docs/viewer_contract.md` frozen, one golden ESPDU
 fixture captured.
 
 M1 — UDP JSON to Rerun, 2 days. Exit: one live aircraft rendered from port 5501,
@@ -67,16 +67,15 @@ container image, runbook.
 
 ## ROS removal
 
-ROS currently provides RViz rendering, `pilot_command_json` input, tf and mission
-markers. No external consumer of the ROS topics exists. The aircraft flies
-scenarios on autopilot with `useBridgeInput=false`, so the sim needs no pilot
-input at all.
+The earlier ROS 2 runtime provided RViz rendering, `pilot_command_json` input, tf
+and mission markers. No external consumer of the ROS topics existed. The aircraft
+flies scenarios on autopilot with `useBridgeInput=false`, so the sim needs no
+pilot input at all.
 
 Replacement: DIS plus Rerun for rendering; a small shim that writes the existing
-control JSON to port 5502 for manual flying. Keep the native `Ros2UdpBridge` FMU
-and its UDP contract; retire the rclpy node, the RViz config, the ROS image and
-the ROS launchers at M4. The name `Ros2UdpBridge` remains as naming debt until
-renamed.
+control JSON to port 5502 for manual flying. The native `UdpBridge` FMU and its
+UDP contract remain; the rclpy node, the RViz config, the ROS image and the ROS
+launchers were retired.
 
 ## Risks
 

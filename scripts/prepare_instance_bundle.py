@@ -5,7 +5,7 @@ The source SSP already binds ``resources/MissionScenario.ssv`` and
 ``resources/HighAltitudeIntercept.ssm`` in its ``SystemStructure.ssd``. This
 script rewrites those two archive members in a per-instance copy of the SSP:
 
-* ``ros2_udp_bridge.telemetry_port`` / ``ros2_udp_bridge.control_port``
+* ``udp_bridge.telemetry_port`` / ``udp_bridge.control_port``
 * shifted ``initX_km`` (north) / ``initY_km`` (east) when an offset applies
 * the ``MissionScenario.ssv`` waypoint array, ``waypointCount``,
   ``waypointProximity_km`` and ``targetAirspeed_mps`` selected by ``scenario``
@@ -52,8 +52,8 @@ NS_SSV = "http://ssp-standard.org/SSP1/SystemStructureParameterValues"
 NS_SSM = "http://ssp-standard.org/SSP1/SystemStructureParameterMapping"
 NS_SSD = "http://ssp-standard.org/SSP1/SystemStructureDescription"
 
-TELEMETRY_PARAM = "ros2_udp_bridge.telemetry_port"
-CONTROL_PARAM = "ros2_udp_bridge.control_port"
+TELEMETRY_PARAM = "udp_bridge.telemetry_port"
+CONTROL_PARAM = "udp_bridge.control_port"
 INIT_X_PARAM = "initX_km"
 INIT_Y_PARAM = "initY_km"
 WAYPOINT_COUNT_PARAM = "waypointCount"

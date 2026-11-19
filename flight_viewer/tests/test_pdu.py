@@ -11,17 +11,17 @@ from opendis.PduFactory import createPdu
 from pysos_interop.dis import BODY_FRAME_ALGORITHMS
 from pysos_interop.rates import euler_rates_to_body_rates
 
-from dis_viewer.config import EntityType, Origin
-from dis_viewer.geo import enu_velocity_to_ecef
-from dis_viewer.model import EntityKey, EntityState
-from dis_viewer.pdu import (
+from flight_viewer.config import EntityType, Origin
+from flight_viewer.geo import enu_velocity_to_ecef
+from flight_viewer.model import EntityKey, EntityState
+from flight_viewer.pdu import (
     ENTITY_STATE_PDU_TYPE,
     decode_datagram,
     dis_timestamp,
     encode_entity_state,
     pdu_spans,
 )
-from dis_viewer.sources.dis_rx import DisSource
+from flight_viewer.sources.dis_rx import DisSource
 
 ORIGIN = Origin(latitude_deg=57.7, longitude_deg=12.0, altitude_m=100.0)
 FIXTURES = Path(__file__).parent / "fixtures"

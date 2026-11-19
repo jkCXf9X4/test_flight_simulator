@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 
-from dis_viewer.model import EntityKey, EntityState
-from dis_viewer.recorder import JsonlRecorder, JsonlSource
+from flight_viewer.model import EntityKey, EntityState
+from flight_viewer.recorder import JsonlRecorder, JsonlSource
 
 
 def _full_state(key: EntityKey, timestamp: float) -> EntityState:

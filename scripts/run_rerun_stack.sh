@@ -2,7 +2,7 @@
 
 # Host-side launcher for the ROS-free stack.
 #
-# The simulation always runs on the host. The dis_viewer/Rerun frontend runs
+# The simulation always runs on the host. The flight_viewer/Rerun frontend runs
 # either on the host with the repo venv (default) or inside the Rerun Podman
 # image when RERUN_CONTAINER=1. The container uses host networking so it can
 # receive the bridge's UDP telemetry on 127.0.0.1:5501.
@@ -14,7 +14,7 @@ IMAGE_NAME="${IMAGE_NAME:-test-flight-simulator-rerun:latest}"
 CONTAINER_NAME="${CONTAINER_NAME:-test-flight-simulator-rerun}"
 RERUN_CONTAINER="${RERUN_CONTAINER:-0}"
 SCENARIO_PATH="${SCENARIO_PATH:-3rd_party/airplane/resources/scenarios/test_scenario.json}"
-RECORD_PATH="${RECORD_PATH:-build/results/dis_viewer.jsonl}"
+RECORD_PATH="${RECORD_PATH:-build/results/flight_viewer.jsonl}"
 TELEMETRY_CSV="${TELEMETRY_CSV:-$REPO_ROOT/build/results/scenario_results_realtime.csv}"
 SIM_READY_TIMEOUT="${SIM_READY_TIMEOUT:-30}"
 XAUTHORITY_PATH="${XAUTHORITY:-$HOME/.Xauthority}"
@@ -150,12 +150,12 @@ else
     fi
   fi
   if ! "$PYTHON" -c "import rerun" >/dev/null 2>&1; then
-    fail "$PYTHON cannot import rerun. Install dis_viewer/requirements.txt or set PYTHON."
+    fail "$PYTHON cannot import rerun. Install flight_viewer/requirements.txt or set PYTHON."
   fi
 
   (
     cd "$REPO_ROOT"
-    exec "$PYTHON" -m dis_viewer "${VIEWER_ARGS[@]}"
+    exec "$PYTHON" -m flight_viewer "${VIEWER_ARGS[@]}"
   ) &
   VIEWER_PID=$!
   wait "$VIEWER_PID"

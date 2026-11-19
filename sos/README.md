@@ -17,4 +17,4 @@ with `python scripts/run_instance_process.py`.
 Every entity publishes telemetry one-way and never addresses another entity;
 there are no entity-to-entity links in the setup.
 
-Regenerate and check the manifest with `scripts/generate_sos_manifest.py`.
+Check the manifest with `pysos-sysml manifest sos/aircraft_federation.sysml -o manifests/aircraft_federation.manifest.json --check`; omit `--check` (or drop `-o`) to regenerate it.

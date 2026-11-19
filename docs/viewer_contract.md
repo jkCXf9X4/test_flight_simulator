@@ -1,7 +1,11 @@
-# DIS viewer contract (phase 1)
+# Viewer contract (phase 1)
 
-Normative. Code in `dis_viewer/` must follow this document. Change the document
+Normative. Code in `flight_viewer/` must follow this document. Change the document
 first, then the code.
+
+The default path is newline-delimited JSON telemetry over UDP. DIS is an optional
+codec imported from `pysos_interop`; sections that name DIS apply only to
+`--source dis` / `--sink dis`.
 
 ## 1. Identity
 
@@ -66,7 +70,7 @@ Seven fields, all configurable:
 
 ## 6. Module API
 
-Python 3.11, package `dis_viewer`, no imports of `rclpy` anywhere.
+Python 3.11, package `flight_viewer`, no imports of `rclpy` anywhere.
 
 `model.py`
 - Re-exports `EntityKey`, `EntityState` and `Vec3` from `pysos_interop`.
@@ -126,7 +130,7 @@ Python 3.11, package `dis_viewer`, no imports of `rclpy` anywhere.
   scenario `EntityType` patched onto the wire.
 
 `sinks/rerun_sink.py`
-- `RerunSink(app_id="dis_viewer", rrd_path=None, spawn=False)`;
+- `RerunSink(app_id="flight_viewer", rrd_path=None, spawn=False)`;
   `log(states, *, trail_points=200)`; `close()`. Per entity it logs
   `world/entity/<slug>/pose` (`Transform3D`), `/trail` (`LineStrips3D`),
   `/marker` (`Boxes3D`, no external mesh), `/status/*` scalars. Positions are
@@ -138,7 +142,7 @@ Python 3.11, package `dis_viewer`, no imports of `rclpy` anywhere.
   original `timestamp` pacing when `realtime=True`.
 
 `cli.py`
-- `python -m dis_viewer --source {json-udp,dis,jsonl} --sink {rerun,dis,jsonl}`
+- `python -m flight_viewer --source {json-udp,dis,jsonl} --sink {rerun,dis,jsonl}`
   with `--host`, `--port`, `--telemetry`, `--transport {unicast,multicast}`,
   `--group`, `--interface`, `--ttl`, `--scenario`, `--config`, `--origin-lat`,
   `--origin-lon`, `--origin-alt`, `--entity-site`, `--entity-application`,

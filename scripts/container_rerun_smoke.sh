@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Headless Rerun smoke test. No X11, no Podman, no viewer: generate a small
-# JSONL recording, replay it through dis_viewer into an .rrd, and assert the
+# JSONL recording, replay it through flight_viewer into an .rrd, and assert the
 # recording is non-empty. Runs on the host with the repo venv.
 
 set -euo pipefail
@@ -20,7 +20,7 @@ if [[ -z "$PYTHON" ]]; then
 fi
 
 if [[ -z "$PYTHON" ]] || ! "$PYTHON" -c "import rerun" >/dev/null 2>&1; then
-  echo "FAIL: no Python interpreter with rerun-sdk; set PYTHON or install dis_viewer/requirements.txt" >&2
+  echo "FAIL: no Python interpreter with rerun-sdk; set PYTHON or install flight_viewer/requirements.txt" >&2
   exit 1
 fi
 
@@ -31,8 +31,8 @@ import math
 import sys
 from pathlib import Path
 
-from dis_viewer.model import EntityKey, EntityState
-from dis_viewer.recorder import JsonlRecorder
+from flight_viewer.model import EntityKey, EntityState
+from flight_viewer.recorder import JsonlRecorder
 
 path = Path(sys.argv[1])
 key = EntityKey(site=1, application=1, entity=1)
@@ -60,7 +60,7 @@ fi
 set +e
 if command -v timeout >/dev/null 2>&1; then
   PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" timeout 20 \
-    "$PYTHON" -m dis_viewer \
+    "$PYTHON" -m flight_viewer \
       --source jsonl \
       --path "$RECORDING" \
       --sink rerun \
@@ -69,7 +69,7 @@ if command -v timeout >/dev/null 2>&1; then
   status=$?
 else
   PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
-    "$PYTHON" -m dis_viewer \
+    "$PYTHON" -m flight_viewer \
       --source jsonl \
       --path "$RECORDING" \
       --sink rerun \
@@ -80,7 +80,7 @@ fi
 set -e
 
 if [[ "$status" -ne 0 ]]; then
-  echo "FAIL: dis_viewer exited with status $status" >&2
+  echo "FAIL: flight_viewer exited with status $status" >&2
   exit "$status"
 fi
 

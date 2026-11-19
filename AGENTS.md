@@ -1,6 +1,6 @@
 # AGENTS
 
-Test workspace for the flight-sim interactive simulation stack. Runs the `ssp_airplane` airplane SSP through `ssp4sim`; the live visualization is ROS-free (`dis_viewer` + Rerun over the bridge's UDP telemetry). The native bridge FMU is still named `Ros2UdpBridge`; that is a legacy identifier kept for the UDP telemetry/control contract.
+Test workspace for the flight-sim interactive simulation stack. Runs the `ssp_airplane` airplane SSP through `ssp4sim`; the live visualization is ROS-free (`flight_viewer` + Rerun). The default telemetry path is newline-delimited JSON over UDP; DIS is an optional codec from `pysos_interop`. The native bridge FMU is `UdpBridge`.
 
 Key scripts:
 - `scripts/check_environment.sh` — validate host prerequisites (`--source-build`, `--live-container`, `--container-build`)
@@ -13,11 +13,9 @@ Key scripts:
 - `scripts/prepare_instance_bundle.py` — prepare a per-instance SSP bundle and config
 - `scripts/run_instances.py` — run the instance federation through `pysos_coordinate.Federation`
 - `scripts/generate_instance_manifest.py` — generate/check `manifests/two_instances.manifest.json`
-- `scripts/generate_sos_manifest.py` — generate/check the SysML-authored `manifests/aircraft_federation.manifest.json`
 - `scripts/run_instance_process.py` — manifest command: prepare one bundle (scenario and ports from its environment), then exec its simulation
 - `scripts/run_e2e_rpr.py` — run the federation, adapt telemetry to RPR one-way, record truth/CSV/Rerun, summarize separation
-- `scripts/rpr_fanin.py` — per-sample barrier and watchdog that aligns the entity streams before recording
-- `sos/aircraft_federation.sysml` — source of truth for the four-aircraft system of systems
+- `sos/aircraft_federation.sysml` — source of truth for the four-aircraft system of systems; check the lowered manifest with `pysos-sysml manifest sos/aircraft_federation.sysml -o manifests/aircraft_federation.manifest.json --check`
 - `scripts/render_showcase_movie.py` — render a showcase movie from a recorded capture (its RViz capture path has been retired)
 
 The aircraft model, SysML architecture, and SSP/FMU build pipeline live in `3rd_party/airplane` (git submodule, handled separately).

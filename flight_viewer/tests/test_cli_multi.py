@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from dis_viewer.cli import build_parser, resolve_telemetry
+from flight_viewer.cli import build_parser, resolve_telemetry
 
 
 def test_telemetry_flags_build_one_spec_per_aircraft():

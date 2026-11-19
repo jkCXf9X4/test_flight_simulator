@@ -5,9 +5,9 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from dis_viewer.cli import build_parser, main, resolve_exercise
-from dis_viewer.model import EntityKey, EntityState
-from dis_viewer.recorder import JsonlRecorder
+from flight_viewer.cli import build_parser, main, resolve_exercise
+from flight_viewer.model import EntityKey, EntityState
+from flight_viewer.recorder import JsonlRecorder
 
 
 def _states() -> list[EntityState]:

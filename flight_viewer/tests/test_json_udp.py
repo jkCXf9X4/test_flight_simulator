@@ -10,9 +10,9 @@ import time
 import pytest
 from pysos_interop.rates import euler_rates_to_body_rates
 
-from dis_viewer.config import EntityConfig, EntityType, Origin
-from dis_viewer.model import EntityKey
-from dis_viewer.sources.json_udp import JsonUdpMultiSource, JsonUdpSource
+from flight_viewer.config import EntityConfig, EntityType, Origin
+from flight_viewer.model import EntityKey
+from flight_viewer.sources.json_udp import JsonUdpMultiSource, JsonUdpSource
 
 
 def _packet(
@@ -26,7 +26,7 @@ def _packet(
     airspeed_mps: float = 61.0,
 ) -> dict:
     return {
-        "transport": "Ros2UdpBridge",
+        "transport": "UdpBridge",
         "reference_latitude_deg": 58.0,
         "reference_longitude_deg": 16.0,
         "reference_altitude_m": 12.0,

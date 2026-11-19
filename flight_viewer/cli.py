@@ -24,7 +24,7 @@ DEFAULT_MULTICAST_GROUP = "239.255.0.1"
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="dis_viewer",
+        prog="flight_viewer",
         description="Bridge simulation telemetry, DIS PDUs and Rerun recordings.",
     )
     parser.add_argument("--source", choices=("json-udp", "dis", "jsonl"), default="json-udp")
@@ -64,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--duration", type=float, default=0.0, help="seconds, 0 = forever")
     parser.add_argument("--count", type=int, default=0, help="iterations, 0 = until duration")
     parser.add_argument("--realtime", action="store_true", help="pace JSONL replay by t_s")
-    parser.add_argument("--app-id", default="dis_viewer")
+    parser.add_argument("--app-id", default="flight_viewer")
     return parser
 
 

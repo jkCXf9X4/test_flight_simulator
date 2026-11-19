@@ -42,7 +42,7 @@ What the build now does inside `3rd_party/airplane`:
 
 ## Rerun viewer
 
-The supported live visualization is ROS-free. `ssp4sim` stays on the host, the native bridge FMU keeps emitting the existing newline-delimited JSON telemetry on UDP 5501, and `dis_viewer` renders it with Rerun.
+The supported live visualization is ROS-free. `ssp4sim` stays on the host, the native bridge FMU keeps emitting the existing newline-delimited JSON telemetry on UDP 5501, and `flight_viewer` renders it with Rerun.
 
 ```bash
 # Host viewer, repo venv (default)
@@ -54,19 +54,19 @@ The supported live visualization is ROS-free. `ssp4sim` stays on the host, the n
 RERUN_CONTAINER=1 ./scripts/run_rerun_stack.sh
 ```
 
-- `run_rerun_stack.sh` starts `./scripts/run_airplane_scenario.py --realtime`, waits for `build/results/scenario_results_realtime.csv` to advance instead of sleeping, then runs `python -m dis_viewer --source json-udp --sink rerun --spawn --scenario 3rd_party/airplane/resources/scenarios/test_scenario.json --record build/results/dis_viewer.jsonl`.
+- `run_rerun_stack.sh` starts `./scripts/run_airplane_scenario.py --realtime`, waits for `build/results/scenario_results_realtime.csv` to advance instead of sleeping, then runs `python -m flight_viewer --source json-udp --sink rerun --spawn --scenario 3rd_party/airplane/resources/scenarios/test_scenario.json --record build/results/flight_viewer.jsonl`.
 - Host execution uses the repo venv. `RERUN_CONTAINER=1` runs the same command inside `Containerfile.rerun` with X11 mounts and `--network=host`, so UDP stays on loopback.
 - Manual pilot input goes through the pilot shim: `./scripts/send_pilot_command.py --pitch 0.2 --roll -0.1 --throttle 0.7 --duration 5` sends JSON control packets to UDP 5502.
 - Headless check, no X11 and no Podman: `./scripts/container_rerun_smoke.sh` writes `/tmp/smoke.rrd` and prints PASS/FAIL.
-- Every live run also writes `build/results/dis_viewer.jsonl`; replay it with `python -m dis_viewer --source jsonl --path build/results/dis_viewer.jsonl --sink rerun --spawn`.
+- Every live run also writes `build/results/flight_viewer.jsonl`; replay it with `python -m flight_viewer --source jsonl --path build/results/flight_viewer.jsonl --sink rerun --spawn`.
 
-## Retired: ROS 2 / RViz viewer
+## Retired: RViz viewer
 
-The earlier ROS 2 / RViz runtime has been retired and replaced by the Rerun viewer. Use `./scripts/run_rerun_stack.sh` for live visualization. The native `Ros2UdpBridge` FMU keeps its historical name because the UDP JSON telemetry/control contract is unchanged.
+The earlier RViz runtime has been retired and replaced by the Rerun viewer. Use `./scripts/run_rerun_stack.sh` for live visualization. The native `UdpBridge` FMU provides the unchanged UDP JSON telemetry/control contract.
 
 ## Current bridge implementation
 
-The bridge is a native FMI 2.0 co-simulation FMU in C++ (`Ros2UdpBridge`) that acts as a UDP telemetry/control adapter, emitting newline-delimited JSON state packets. The name is a legacy identifier kept so the UDP contract and SSP members stay stable; it no longer implies a ROS 2 dependency.
+The bridge is a native FMI 2.0 co-simulation FMU in C++ (`UdpBridge`) that acts as a UDP telemetry/control adapter, emitting newline-delimited JSON state packets. The bridge has no ROS dependency; it is a plain UDP telemetry/control adapter.
 
 Current behavior:
 
@@ -87,10 +87,10 @@ Containerized viewer behavior:
 
 Implementation/build notes:
 
-- the FMU is built from `3rd_party/airplane/models/ros2_udp_bridge/native/`
-- the generated FMU is written to `3rd_party/airplane/build/fmus/Ros2UdpBridge.fmu`
+- the FMU is built from `3rd_party/airplane/models/udp_bridge/native/`
+- the generated FMU is written to `3rd_party/airplane/build/fmus/UdpBridge.fmu`
 - the shared library exports the standard FMI 2 `fmi2*` entry points so `pyssp4sim` can import it directly
-- `3rd_party/airplane/tests/test_ros2_udp_bridge_fmu.py` now verifies the JSON bridge packet and control pass-through path
+- `3rd_party/airplane/tests/test_udp_bridge_fmu.py` now verifies the JSON bridge packet and control pass-through path
 
 ## Timing approach
 
@@ -112,14 +112,14 @@ Planned follow-up work, but explicitly not part of the initial implementation:
 
 The aircraft package now includes the native bridge in the packaged SSP workflow:
 
-- the dedicated `Ros2UdpBridge` component is part of the aircraft architecture and SSD
+- the dedicated `UdpBridge` component is part of the aircraft architecture and SSD
 - the bridge is packaged as a native C++ FMU alongside the Modelica-exported subsystem FMUs
 - bridge-produced pilot commands enter through `ControlInterface`
 - top-level scripts build the SSP and can run a scenario while the bridge emits live UDP telemetry
 
 ## Expected next implementation steps
 
-The ROS 2 / RViz runtime removal is complete. Remaining follow-up work is tracked in `TODO.md`.
+The RViz runtime removal is complete. Remaining follow-up work is tracked in `TODO.md`.
 
 ## Multi-instance runs
 
@@ -129,9 +129,8 @@ the schema owned by `pysos_coordinate`:
 - `manifests/two_instances.manifest.json` — the generated two-instance default,
   produced by `scripts/generate_instance_manifest.py`.
 - `manifests/aircraft_federation.manifest.json` — the four-aircraft SoS
-  manifest, lowered from `sos/aircraft_federation.sysml` by
-  `scripts/generate_sos_manifest.py` (RED-1/RED-2/BLUE-1/BLUE-2, four distinct
-  scenarios).
+  manifest, lowered from `sos/aircraft_federation.sysml` by `pysos-sysml`
+  (RED-1/RED-2/BLUE-1/BLUE-2, four distinct scenarios).
 
 They are generated, not hand-edited:
 
@@ -139,8 +138,7 @@ They are generated, not hand-edited:
 PY=/home/eriro/pwa/2_work/flight_sim/venv/bin/python3
 $PY scripts/generate_instance_manifest.py           # rewrite the two-instance manifest
 $PY scripts/generate_instance_manifest.py --check   # fail if it is stale
-$PY scripts/generate_sos_manifest.py                # rewrite the SoS manifest
-$PY scripts/generate_sos_manifest.py --check        # fail if it is stale
+$PY -m pysos_sysml manifest sos/aircraft_federation.sysml -o manifests/aircraft_federation.manifest.json --check  # fail if it is stale
 ```
 
 `scripts/run_instances.py` translates its CLI into a manifest and hands the
@@ -196,9 +194,8 @@ The scenario is selected per instance, never shared:
 
 1. The SysML federation author writes `scenario = "<stem>"` on an instance in
    `sos/aircraft_federation.sysml`.
-2. `scripts/generate_sos_manifest.py` lowers that to the manifest
-   `env.PYSOS_SCENARIO` key (alongside `PYSOS_TELEMETRY_PORT` and
-   `PYSOS_CONTROL_PORT`).
+2. `pysos-sysml manifest` lowers that to the manifest `env.PYSOS_SCENARIO`
+   key (alongside `PYSOS_TELEMETRY_PORT` and `PYSOS_CONTROL_PORT`).
 3. `scripts/run_instance_process.py` reads those variables (explicit CLI flags
    still win, and the scenario defaults to `test_scenario` when the key is
    absent). When `--instance` is omitted, it derives the 1-based index from

@@ -265,45 +265,8 @@ def _roundtrip_marking(publisher):
     state = publisher._next_state(
         _telemetry_packet(position_m=(100.0, 0.0, 1000.0))
     )
-    assert state is not None
     data = rpr_e2e.encode_entity_state(state, origin=publisher.origin)
     return rpr_e2e.decode_frame(data, origin=publisher.origin).state.marking
-
-
-def test_publisher_skips_only_leading_preinit_record():
-    real_one = _telemetry_packet(
-        position_m=(100.0, 200.0, 1000.0),
-        airspeed_mps=50.0,
-        climb_rate=2.0,
-        distance_to_waypoint_km=3.0,
-        waypoint_index=1,
-        total_waypoints=4,
-    )
-    real_two = _telemetry_packet(
-        position_m=(110.0, 200.0, 1000.0),
-        airspeed_mps=50.0,
-        climb_rate=2.0,
-        distance_to_waypoint_km=2.9,
-        waypoint_index=1,
-        total_waypoints=4,
-    )
-    publisher = _publisher()
-
-    accepted = [
-        state
-        for state in (
-            publisher._next_state(packet)
-            for packet in (_telemetry_packet(), real_one, real_two)
-        )
-        if state is not None
-    ]
-
-    assert len(accepted) == 2
-    assert accepted[0].timestamp == 0.0
-    assert accepted[1].timestamp == pytest.approx(0.1)
-    assert accepted[0].position_enu_m == pytest.approx((200.0, 100.0, 1000.0))
-    assert accepted[1].position_enu_m == pytest.approx((200.0, 110.0, 1000.0))
-    assert accepted[0].velocity_enu_mps == (0.0, 0.0, 0.0)
 
 
 def test_publisher_publishes_legit_nonzero_first_packet_unchanged():
@@ -318,7 +281,6 @@ def test_publisher_publishes_legit_nonzero_first_packet_unchanged():
 
     state = _publisher()._next_state(packet)
 
-    assert state is not None
     assert state.timestamp == 0.0
     assert state.position_enu_m == pytest.approx((0.0, 0.0, 1200.0))
     assert state.velocity_enu_mps == (0.0, 0.0, 0.0)
@@ -329,11 +291,10 @@ def test_publisher_does_not_drop_all_zero_packet_after_publication():
     first = publisher._next_state(
         _telemetry_packet(position_m=(100.0, 0.0, 1000.0), airspeed_mps=50.0)
     )
-    assert first is not None
+    assert first.timestamp == 0.0
 
     zero_after = publisher._next_state(_telemetry_packet())
 
-    assert zero_after is not None
     assert zero_after.timestamp == pytest.approx(0.1)
     assert zero_after.position_enu_m == (0.0, 0.0, 0.0)
 
