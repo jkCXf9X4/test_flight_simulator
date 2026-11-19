@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 
 from .config import EntityConfig, ExerciseConfig, Origin, TransportConfig, load_exercise
-from .dead_reckoning import mark_stale
 from .model import EntityKey, EntityState
 from .recorder import JsonlRecorder, JsonlSource
 from .sinks.dis_tx import DisSink
@@ -254,6 +253,9 @@ class _Sink:
                 config.origin,
                 config.exercise_id,
                 config.dr_algorithm,
+                entity_types={
+                    entity.key: entity.entity_type for entity in config.entities
+                },
             )
         else:
             if args.path is None:
@@ -266,7 +268,8 @@ class _Sink:
         elif self.kind == "dis":
             self._impl.publish(states)
         else:
-            self._impl.write(states)
+            for state in states:
+                self._impl.write(state)
 
     def close(self) -> None:
         close_impl = getattr(self._impl, "close", None)
@@ -298,10 +301,10 @@ def _loop(
                 timeout = max(0.0, min(timeout, deadline - time.monotonic()))
             states = source.receive(timeout)
             if states:
-                states = mark_stale(states, time.monotonic(), config.stale_after_s)
                 sink.publish(states)
                 if recorder is not None:
-                    recorder.write(states)
+                    for state in states:
+                        recorder.write(state)
             elif source.exhausted:
                 break
             iterations += 1

@@ -27,10 +27,11 @@ fi
 rm -f "$RECORDING" "$RRD"
 
 if ! PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON" - "$RECORDING" <<'PY'
+import math
 import sys
 from pathlib import Path
 
-from dis_viewer.model import EntityKey, EntityState, EntityType
+from dis_viewer.model import EntityKey, EntityState
 from dis_viewer.recorder import JsonlRecorder
 
 path = Path(sys.argv[1])
@@ -38,19 +39,18 @@ key = EntityKey(site=1, application=1, entity=1)
 states = [
     EntityState(
         key=key,
-        t_s=0.1 * i,
+        timestamp=0.1 * i,
         position_enu_m=(10.0 * i, 20.0 * i, 1000.0 + i),
-        orientation_deg=(0.0, 0.0, 45.0),
         velocity_enu_mps=(10.0, 20.0, 1.0),
-        entity_type=EntityType(),
-        force_id=1,
+        orientation_rps=(0.0, 0.0, math.radians(45.0)),
+        angular_velocity_rps=(0.0, 0.0, 0.0),
         marking="AC-1",
-        stale=False,
     )
     for i in range(4)
 ]
 with JsonlRecorder(path) as recorder:
-    recorder.write(states)
+    for state in states:
+        recorder.write(state)
 PY
 then
   echo "FAIL: could not write $RECORDING" >&2

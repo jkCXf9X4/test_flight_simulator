@@ -8,9 +8,10 @@ import socket
 import time
 
 import pytest
+from pysos_interop.rates import euler_rates_to_body_rates
 
-from dis_viewer.config import EntityConfig, Origin
-from dis_viewer.model import EntityKey, EntityType
+from dis_viewer.config import EntityConfig, EntityType, Origin
+from dis_viewer.model import EntityKey
 from dis_viewer.sources.json_udp import JsonUdpMultiSource, JsonUdpSource
 
 
@@ -79,38 +80,39 @@ def test_two_concatenated_packets_map_to_enu_with_finite_difference():
         assert states[0].position_enu_m == pytest.approx((0.0, 0.0, 1000.0))
         # x is north, y is east: y_km=0.2 -> 200 m east, x_km=0.1 -> 100 m north.
         assert states[1].position_enu_m == pytest.approx((200.0, 100.0, 1000.0))
-        assert states[1].orientation_deg == pytest.approx((4.5, -2.0, 90.0))
+        assert states[1].orientation_rps == pytest.approx(
+            [math.radians(v) for v in (4.5, -2.0, 90.0)]
+        )
 
         assert states[0].velocity_enu_mps == pytest.approx((0.0, 0.0, 0.0))
-        dt = states[1].t_s - states[0].t_s
+        dt = states[1].timestamp - states[0].timestamp
         assert dt > 0.0
         assert states[1].velocity_enu_mps == pytest.approx(
             (200.0 / dt, 100.0 / dt, 0.0)
         )
         assert states[0].angular_velocity_rps == pytest.approx((0.0, 0.0, 0.0))
+        euler_rates = (
+            math.radians(4.5) / dt,
+            math.radians(-2.0) / dt,
+            math.radians(90.0) / dt,
+        )
         assert states[1].angular_velocity_rps == pytest.approx(
-            (
-                math.radians(4.5) / dt,
-                math.radians(-2.0) / dt,
-                math.radians(90.0) / dt,
-            )
+            euler_rates_to_body_rates(states[1].orientation_rps, euler_rates)
         )
         assert states[1].key == entity.key
-        assert states[1].entity_type == entity.entity_type
         assert states[1].force_id == 2
         assert states[1].marking == "TEST"
         assert source.last_status["airspeed_mps"] == pytest.approx(61.0)
         assert source.last_status["climb_rate"] == pytest.approx(1.25)
         assert source.last_status["waypoint_index"] == 2
         assert source.last_status["complete"] is False
-        assert states[1].status["airspeed_mps"] == pytest.approx(61.0)
     finally:
         sender.close()
         source.close()
 
 
 def test_yaw_rate_wraps_across_180_degrees():
-    entity = EntityConfig(key=EntityKey())
+    entity = EntityConfig(key=EntityKey(1, 1, 1))
     source = JsonUdpSource("127.0.0.1", 0, entity, Origin())
     sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -122,9 +124,10 @@ def test_yaw_rate_wraps_across_180_degrees():
         states = source.receive(timeout=1.0)
 
         assert len(states) == 2
-        dt = states[1].t_s - states[0].t_s
-        assert states[1].angular_velocity_rps[2] == pytest.approx(
-            math.radians(2.0) / dt
+        dt = states[1].timestamp - states[0].timestamp
+        euler_rates = (0.0, 0.0, math.radians(2.0) / dt)
+        assert states[1].angular_velocity_rps == pytest.approx(
+            euler_rates_to_body_rates(states[1].orientation_rps, euler_rates)
         )
     finally:
         sender.close()
@@ -132,7 +135,7 @@ def test_yaw_rate_wraps_across_180_degrees():
 
 
 def test_whitespace_and_partial_payloads_do_not_crash():
-    entity = EntityConfig(key=EntityKey())
+    entity = EntityConfig(key=EntityKey(1, 1, 1))
     source = JsonUdpSource("127.0.0.1", 0, entity, Origin())
     sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -191,8 +194,8 @@ def test_multi_source_returns_states_from_both_ports():
 def test_multi_source_without_traffic_returns_empty_list():
     multi = JsonUdpMultiSource(
         [
-            ("127.0.0.1", 0, EntityConfig(key=EntityKey(entity=1))),
-            ("127.0.0.1", 0, EntityConfig(key=EntityKey(entity=2))),
+            ("127.0.0.1", 0, EntityConfig(key=EntityKey(1, 1, 1))),
+            ("127.0.0.1", 0, EntityConfig(key=EntityKey(1, 1, 2))),
         ]
     )
     try:

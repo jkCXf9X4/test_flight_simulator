@@ -11,10 +11,26 @@ from dis_viewer.recorder import JsonlRecorder
 
 
 def _states() -> list[EntityState]:
-    key = EntityKey()
+    key = EntityKey(1, 1, 1)
     return [
-        EntityState(key=key, t_s=0.0, position_enu_m=(0.0, 0.0, 1000.0)),
-        EntityState(key=key, t_s=0.1, position_enu_m=(15.0, 30.0, 1001.0)),
+        EntityState(
+            key=key,
+            timestamp=0.0,
+            position_enu_m=(0.0, 0.0, 1000.0),
+            velocity_enu_mps=(0.0, 0.0, 0.0),
+            orientation_rps=(0.0, 0.0, 0.0),
+            angular_velocity_rps=(0.0, 0.0, 0.0),
+            marking="AC-1",
+        ),
+        EntityState(
+            key=key,
+            timestamp=0.1,
+            position_enu_m=(15.0, 30.0, 1001.0),
+            velocity_enu_mps=(0.0, 0.0, 0.0),
+            orientation_rps=(0.0, 0.0, 0.0),
+            angular_velocity_rps=(0.0, 0.0, 0.0),
+            marking="AC-1",
+        ),
     ]
 
 
@@ -30,17 +46,18 @@ def test_default_dr_algorithm_is_rvw() -> None:
     assert resolve_exercise(args).dr_algorithm == 4
 
 
-def test_dr_algorithm_flag_can_select_rpw() -> None:
+def test_dr_algorithm_flag_can_select_world_frame_velocity() -> None:
     args = build_parser().parse_args(
-        ["--dr-algorithm", "3", "--origin-lat", "0", "--origin-lon", "0"]
+        ["--dr-algorithm", "2", "--origin-lat", "0", "--origin-lon", "0"]
     )
-    assert resolve_exercise(args).dr_algorithm == 3
+    assert resolve_exercise(args).dr_algorithm == 2
 
 
 def test_jsonl_to_rerun_recording(tmp_path: Path) -> None:
     source_path = tmp_path / "run.jsonl"
     with JsonlRecorder(source_path) as recorder:
-        recorder.write(_states())
+        for state in _states():
+            recorder.write(state)
     rrd_path = tmp_path / "out.rrd"
 
     rc = main(
@@ -66,7 +83,8 @@ def test_jsonl_to_rerun_recording(tmp_path: Path) -> None:
 def test_jsonl_replay_stops_when_exhausted(tmp_path: Path) -> None:
     source_path = tmp_path / "run.jsonl"
     with JsonlRecorder(source_path) as recorder:
-        recorder.write(_states())
+        for state in _states():
+            recorder.write(state)
     rrd_path = tmp_path / "replay.rrd"
 
     started = time.monotonic()

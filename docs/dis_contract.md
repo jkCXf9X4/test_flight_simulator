@@ -44,49 +44,43 @@ Seven fields, all configurable:
 
 ## 4. Time
 
-- Ordering in phase 1 uses host monotonic receive time.
+- JSON telemetry states use host monotonic receive time; DIS-decoded states use
+  the PDU header timestamp.
 - The DIS header timestamp is hour-relative, 2^-31 h ticks, bit 31 selecting
   absolute versus relative. Use relative in phase 1.
-- Dead reckoning uses the receiving clock, not the PDU timestamp.
+- Dead reckoning advances from the state timestamp it is given.
 - M3 adds `sim_time_s` to the telemetry JSON. Playback may use it; ordering must
   not.
 
 ## 5. Message rates
 
 - One Entity State PDU per aircraft per telemetry packet, 10 Hz.
-- No separate heartbeat PDU. An entity with no update for 5 s is marked stale and
-  keeps its last pose.
-- Dead-reckoning algorithm 4 (RVW) is the default; algorithm 3 (RPW) remains
-  selectable with `--dr-algorithm 3`. RVW needs velocity, not linear
-  acceleration.
-- Angular velocity is carried through the pipeline: the model stores
-  roll/pitch/yaw Euler rates in radians per second, the DIS wire carries them
-  for rotating algorithms 3, 4, 7 and 8, and telemetry sources derive them by
-  finite difference between consecutive packets.
-- DIS angular velocity is body-frame (about the entity's forward/right/down
-  axes); Euler rates are the model-side representation, converted at the PDU
-  boundary with the Z-Y-X relations in `geo.py`.
+- No separate heartbeat PDU. An entity with no update for 5 s is stale
+  (`pysos_interop.is_stale`) and keeps its last pose.
+- Dead-reckoning algorithms 1 (static), 2 (linear) and 4 (RVW) are the shared
+  contract; 4 is the default. RVW needs velocity, not linear acceleration.
+- Angular velocity is carried through the pipeline: the shared model stores
+  body-frame angular velocity in radians per second, telemetry sources derive
+  Z-Y-X Euler rates by finite difference and convert them once with
+  `pysos_interop.euler_rates_to_body_rates`.
 
 ## 6. Module API
 
 Python 3.11, package `dis_viewer`, no imports of `rclpy` anywhere.
 
 `model.py`
-- `Vec3 = tuple[float, float, float]`
-- `EntityKey(site, application, entity)`; frozen, sortable; `slug` returns
-  `"<site>_<application>_<entity>"`; `__str__` returns `"<site>:<application>:<entity>"`.
-- `EntityType(kind, domain, country, category, subcategory, specific, extra)`,
-  frozen; `as_tuple()` returns the seven fields in that order.
-- `EntityState(key, t_s, position_enu_m, orientation_deg, velocity_enu_mps,
-  angular_velocity_rps, entity_type, force_id, marking, stale)`; mutable
-  dataclass, defaults for all except `key` and `t_s`; `orientation_deg` is
-  `(roll, pitch, yaw)` degrees; `angular_velocity_rps` is the rate of those
-  Euler angles in radians per second (local-frame approximation);
-  `copy_with(**changes)` uses `dataclasses.replace`.
+- Re-exports `EntityKey`, `EntityState` and `Vec3` from `pysos_interop`.
+- `EntityState(key, timestamp, position_enu_m, velocity_enu_mps,
+  orientation_rps, angular_velocity_rps, marking, force_id=1, exercise_id=1)`;
+  frozen; `orientation_rps` is `(roll, pitch, yaw)` radians and
+  `angular_velocity_rps` is body-frame radians per second.
 
 `config.py`
 - `Origin(latitude_deg, longitude_deg, altitude_m)`, frozen; `is_set()`;
   `Origin.from_scenario(path)` reads `points[0]`.
+- `EntityType(kind, domain, country, category, subcategory, specific, extra)`,
+  frozen; `as_tuple()` returns the seven fields in that order. It is scenario
+  identity metadata and is not part of `EntityState`.
 - `EntityConfig(key, entity_type, force_id=1, marking="")`, frozen.
 - `TransportConfig(mode="unicast", host="127.0.0.1", port=3000, ttl=1,
   interface=None)`, frozen; `mode` is `"unicast"` or `"multicast"`.
@@ -95,48 +89,41 @@ Python 3.11, package `dis_viewer`, no imports of `rclpy` anywhere.
 - `load_exercise(path)` reads the JSON form of the above; `save_exercise(path, cfg)`.
 
 `geo.py`
-- `geodetic_to_ecef(lat_deg, lon_deg, alt_m) -> Vec3`
-- `ecef_to_geodetic(ecef_m) -> tuple[float, float, float]`
-- `enu_to_ecef(enu_m, origin) -> Vec3`, `ecef_to_enu(ecef_m, origin) -> Vec3`
-- `enu_velocity_to_ecef(vel_enu_mps, origin) -> Vec3` and the inverse.
-- `rpy_deg_to_dis(roll, pitch, yaw) -> tuple[float, float, float]` (radians),
-  `dis_to_rpy_deg(psi, theta, phi) -> tuple[float, float, float]` (degrees).
-- `euler_rates_to_body_rates(rates_rps, orientation_deg) -> Vec3` and
-  `body_rates_to_euler_rates(body_rates_rps, orientation_deg) -> Vec3`:
-  Z-Y-X Euler-rate and body-frame angular-rate conversion (`(p, q, r)` about
-  body x forward, y right, z down). The inverse raises at pitch +/-90 degrees.
-- `local_sim_to_enu(x_m, y_m, z_m) -> Vec3` and the inverse.
+- Re-exports the WGS84/ECEF/ENU conversions and the Z-Y-X rate helpers from
+  `pysos_interop`.
+- `local_sim_to_enu(x_m, y_m, z_m) -> Vec3`, `enu_to_local_sim(enu_m)`,
+  `heading_deg_from_velocity(velocity_enu_mps)`.
 
 `dead_reckoning.py`
-- `extrapolate(state, now_s, algorithm=3) -> EntityState`
-- `mark_stale(states, now_s, stale_after_s) -> list[EntityState]`
+- Re-exports `dead_reckon(state, dt, algorithm=4)`, `is_stale(state, now,
+  threshold)` and the algorithm constants from `pysos_interop`.
 
 `pdu.py`
-- `encode_entity_state(state, origin, exercise_id, *, dr_algorithm=3,
-  timestamp=None) -> bytes`
+- `encode_entity_state(state, origin, exercise_id, *, dr_algorithm=4,
+  timestamp=None, entity_type=None) -> bytes`; delegates to
+  `pysos_interop.dis` and patches the scenario entity type.
 - `decode_datagram(data, origin) -> list[EntityState]` (handles concatenated PDUs)
 - `dis_timestamp(t_s, *, relative=True) -> int`
-- `DR_ALGORITHMS` mapping names to numbers; `ENTITY_STATE_PDU_TYPE = 1`.
+- `ENTITY_STATE_PDU_TYPE = 1`.
 
 `transport.py`
-- `Channel` protocol with `send(data: bytes)`, `receive(timeout: float | None) -> bytes | None`,
-  `close()`.
-- `open_channel(cfg: TransportConfig, *, receive: bool) -> Channel`.
-  Unicast: bind only when `receive`. Multicast: join group on the configured
-  interface, TTL from config, loop enabled.
+- `open_channel(cfg: TransportConfig, *, receive: bool) -> Channel`, an adapter
+  over `pysos_interop.transport.Channel` where `receive` returns `None` on
+  timeout.
 
 `sources/json_udp.py`
 - `JsonUdpSource(host, port, entity: EntityConfig, origin: Origin)`;
   `receive(timeout) -> list[EntityState]`; parses the newline-delimited JSON
-  telemetry and maps it to `EntityState` with `force_id` and `entity_type` from
-  the entity config.
+  telemetry and maps it to `EntityState` with `force_id` and `marking` from the
+  entity config; `last_status` keeps the flat flight/mission fields.
 
 `sources/dis_rx.py`
 - `DisSource(channel, origin, exercise_id=1)`; `receive(timeout) -> list[EntityState]`.
 
 `sinks/dis_tx.py`
-- `DisSink(channel, origin, exercise_id=1, dr_algorithm=3)`;
-  `publish(states) -> int` (bytes sent).
+- `DisSink(channel, origin, exercise_id=1, dr_algorithm=4, entity_types=None)`;
+  `publish(states) -> int` (bytes sent). `entity_types` maps `EntityKey` to the
+  scenario `EntityType` patched onto the wire.
 
 `sinks/rerun_sink.py`
 - `RerunSink(app_id="dis_viewer", rrd_path=None, spawn=False)`;
@@ -146,9 +133,9 @@ Python 3.11, package `dis_viewer`, no imports of `rclpy` anywhere.
   ENU metres. `spawn=False` and `rrd_path` set must produce a non-empty file.
 
 `recorder.py`
-- `JsonlRecorder(path)`; `write(states)`, `close()`.
+- `JsonlRecorder(path)` from `pysos_interop.jsonl`; `write(state)`, `close()`.
 - `JsonlSource(path)`; `receive(timeout=0) -> list[EntityState]`; replays at
-  original `t_s` pacing when `realtime=True`.
+  original `timestamp` pacing when `realtime=True`.
 
 `cli.py`
 - `python -m dis_viewer --source {json-udp,dis,jsonl} --sink {rerun,dis,jsonl}`

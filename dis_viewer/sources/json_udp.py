@@ -14,6 +14,8 @@ import socket
 import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from pysos_interop.rates import euler_rates_to_body_rates
+
 from ..config import EntityConfig, Origin
 from ..geo import local_sim_to_enu
 from ..model import EntityState, Vec3
@@ -138,9 +140,8 @@ class JsonUdpSource:
 
     ``last_status`` holds the flat flight/mission fields of the most recent
     packet (airspeed, climb rate, angle of attack, waypoint index, completion).
-    The same mapping is also attached to each emitted state as
-    ``state.status``; :class:`~dis_viewer.model.EntityState` is a mutable
-    dataclass, so this adds an attribute without changing its schema.
+    The shared entity state is frozen and carries no status mapping; consumers
+    that need the raw telemetry fields read ``last_status``.
     """
 
     def __init__(self, host: str, port: int, entity: EntityConfig, origin: Origin) -> None:
@@ -174,7 +175,10 @@ class JsonUdpSource:
         for index, packet in enumerate(packets):
             t_s = base + index * _NOMINAL_DT_S
             position = local_sim_to_enu(*packet["state_m"])
-            orientation = packet["orientation_deg"]
+            orientation_deg = packet["orientation_deg"]
+            orientation_rps = tuple(
+                math.radians(value) for value in orientation_deg
+            )
             velocity: Vec3 = (0.0, 0.0, 0.0)
             angular_velocity: Vec3 = (0.0, 0.0, 0.0)
             if self._last is not None:
@@ -185,29 +189,26 @@ class JsonUdpSource:
                         (position[1] - self._last[1][1]) / dt,
                         (position[2] - self._last[1][2]) / dt,
                     )
-                    angular_velocity = _orientation_rate_rps(
-                        self._last[2], orientation, dt
+                    angular_velocity = euler_rates_to_body_rates(
+                        orientation_rps,
+                        _orientation_rate_rps(self._last[2], orientation_deg, dt),
                     )
-            self._last = (t_s, position, orientation)
+            self._last = (t_s, position, orientation_deg)
 
             status = _status_fields(packet)
             self.last_status = status
-            state = EntityState(
-                key=self.entity.key,
-                t_s=t_s,
-                position_enu_m=position,
-                orientation_deg=orientation,
-                velocity_enu_mps=velocity,
-                angular_velocity_rps=angular_velocity,
-                entity_type=self.entity.entity_type,
-                force_id=self.entity.force_id,
-                marking=self.entity.resolved_marking(),
-                stale=False,
+            states.append(
+                EntityState(
+                    key=self.entity.key,
+                    timestamp=t_s,
+                    position_enu_m=position,
+                    velocity_enu_mps=velocity,
+                    orientation_rps=orientation_rps,
+                    angular_velocity_rps=angular_velocity,
+                    force_id=self.entity.force_id,
+                    marking=self.entity.resolved_marking(),
+                )
             )
-            state.status = dict(status)  # type: ignore[attr-defined]
-            state.flight_status = dict(packet["flight_status"])  # type: ignore[attr-defined]
-            state.mission_status = dict(packet["mission_status"])  # type: ignore[attr-defined]
-            states.append(state)
         return states
 
     def close(self) -> None:

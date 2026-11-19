@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
-from .model import EntityKey, EntityType
+from pysos_interop import EntityKey
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,34 @@ class Origin:
             latitude_deg=float(first["latitude_deg"]),
             longitude_deg=float(first["longitude_deg"]),
             altitude_m=float(first.get("altitude_m", 0.0)),
+        )
+
+
+@dataclass(frozen=True)
+class EntityType:
+    """DIS entity type, seven fields in wire order.
+
+    The shared entity state deliberately does not carry entity type; it is
+    scenario identity metadata, so it lives with the project configuration.
+    """
+
+    kind: int = 1
+    domain: int = 2
+    country: int = 0
+    category: int = 1
+    subcategory: int = 0
+    specific: int = 0
+    extra: int = 0
+
+    def as_tuple(self) -> Tuple[int, int, int, int, int, int, int]:
+        return (
+            self.kind,
+            self.domain,
+            self.country,
+            self.category,
+            self.subcategory,
+            self.specific,
+            self.extra,
         )
 
 
