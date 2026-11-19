@@ -63,6 +63,9 @@ Seven fields, all configurable:
   roll/pitch/yaw Euler rates in radians per second, the DIS wire carries them
   for rotating algorithms 3, 4, 7 and 8, and telemetry sources derive them by
   finite difference between consecutive packets.
+- DIS angular velocity is body-frame (about the entity's forward/right/down
+  axes); Euler rates are the model-side representation, converted at the PDU
+  boundary with the Z-Y-X relations in `geo.py`.
 
 ## 6. Module API
 
@@ -98,6 +101,10 @@ Python 3.11, package `dis_viewer`, no imports of `rclpy` anywhere.
 - `enu_velocity_to_ecef(vel_enu_mps, origin) -> Vec3` and the inverse.
 - `rpy_deg_to_dis(roll, pitch, yaw) -> tuple[float, float, float]` (radians),
   `dis_to_rpy_deg(psi, theta, phi) -> tuple[float, float, float]` (degrees).
+- `euler_rates_to_body_rates(rates_rps, orientation_deg) -> Vec3` and
+  `body_rates_to_euler_rates(body_rates_rps, orientation_deg) -> Vec3`:
+  Z-Y-X Euler-rate and body-frame angular-rate conversion (`(p, q, r)` about
+  body x forward, y right, z down). The inverse raises at pitch +/-90 degrees.
 - `local_sim_to_enu(x_m, y_m, z_m) -> Vec3` and the inverse.
 
 `dead_reckoning.py`

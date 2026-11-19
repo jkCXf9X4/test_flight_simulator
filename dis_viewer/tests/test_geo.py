@@ -8,11 +8,13 @@ from dis_viewer.config import Origin
 from dis_viewer.geo import (
     WGS84_A,
     WGS84_E2,
+    body_rates_to_euler_rates,
     dis_to_rpy_deg,
     ecef_to_enu,
     ecef_to_geodetic,
     enu_to_ecef,
     enu_to_local_sim,
+    euler_rates_to_body_rates,
     geodetic_to_ecef,
     heading_deg_from_velocity,
     local_sim_to_enu,
@@ -110,6 +112,50 @@ def test_local_sim_to_enu_axis_mapping():
 def test_rpy_dis_round_trip(rpy_deg):
     psi, theta, phi = rpy_deg_to_dis(*rpy_deg)
     assert dis_to_rpy_deg(psi, theta, phi) == pytest.approx(rpy_deg, abs=1e-12)
+
+
+@pytest.mark.parametrize(
+    "orientation_deg",
+    [
+        pytest.param((0.0, 0.0, 0.0), id="level"),
+        pytest.param((10.0, -20.0, 30.0), id="typical"),
+        pytest.param((-30.0, 40.0, 170.0), id="banked-turned"),
+    ],
+)
+@pytest.mark.parametrize(
+    "rates_rps",
+    [
+        pytest.param((0.0, 0.0, 0.0), id="still"),
+        pytest.param((0.1, -0.2, 0.3), id="mixed"),
+        pytest.param((-0.4, 0.05, 0.25), id="negative-roll"),
+    ],
+)
+def test_euler_rates_body_rates_round_trip(orientation_deg, rates_rps):
+    body = euler_rates_to_body_rates(rates_rps, orientation_deg)
+    recovered = body_rates_to_euler_rates(body, orientation_deg)
+    assert recovered == pytest.approx(rates_rps, abs=1e-9)
+
+
+def test_pure_yaw_level_flight_body_rate():
+    # Level, unbanked: the yaw rate is entirely about the body z (down) axis.
+    body = euler_rates_to_body_rates((0.0, 0.0, 0.35), (0.0, 0.0, 0.0))
+    assert body == pytest.approx((0.0, 0.0, 0.35), abs=1e-12)
+
+
+def test_pure_roll_body_rate():
+    body = euler_rates_to_body_rates((0.4, 0.0, 0.0), (25.0, 0.0, 0.0))
+    assert body == pytest.approx((0.4, 0.0, 0.0), abs=1e-12)
+
+
+def test_90_degree_pitch_is_gimbal_degenerate():
+    # At pitch = +90 deg the Z-Y-X Euler-rate map is singular: roll and yaw
+    # rates are no longer separately recoverable from body rates (gimbal lock).
+    orientation = (0.0, 90.0, 25.0)
+    with pytest.raises(ValueError):
+        body_rates_to_euler_rates((0.1, 0.2, 0.3), orientation)
+    # The forward map stays computable; a pure pitch rate projects onto body y.
+    body = euler_rates_to_body_rates((0.0, 0.5, 0.0), orientation)
+    assert body == pytest.approx((0.0, 0.5, 0.0), abs=1e-12)
 
 
 @pytest.mark.parametrize(

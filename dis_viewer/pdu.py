@@ -13,9 +13,10 @@ The body frame is the usual aerospace frame (x forward, y right, z down),
 with yaw measured clockwise from north.  Only the velocity field changes
 frame; position is always ECEF.
 
-Angular velocity is carried for rotating algorithms 3, 4, 7 and 8.  The model's
-Euler-angle rates are sent as-is; the world/body distinction is treated as a
-local-frame approximation, and linear acceleration is always zero.
+Angular velocity is carried for rotating algorithms 3, 4, 7 and 8.  DIS carries
+body-frame angular velocity, while the model stores Z-Y-X Euler-angle rates;
+the two are converted with :func:`~dis_viewer.geo.euler_rates_to_body_rates`
+at the PDU boundary.  Linear acceleration is always zero.
 """
 
 from __future__ import annotations
@@ -44,11 +45,13 @@ from opendis.stream import DataOutputStream
 
 from .config import Origin
 from .geo import (
+    body_rates_to_euler_rates,
     dis_to_rpy_deg,
     ecef_to_enu,
     ecef_velocity_to_enu,
     enu_to_ecef,
     enu_velocity_to_ecef,
+    euler_rates_to_body_rates,
     rpy_deg_to_dis,
 )
 from .model import EntityKey, EntityState, EntityType, Vec3
@@ -174,15 +177,17 @@ def _wire_velocity(
 
 
 def _wire_angular_velocity(state: EntityState, dr_algorithm: int) -> Vec3:
-    """Return the DIS angular velocity for a rotating algorithm.
+    """Return the DIS body-frame angular velocity for a rotating algorithm.
 
-    The model's rates are Euler-angle rates in the local frame; they are sent
-    as-is rather than converted between world and body frames.  Non-rotating
-    algorithms carry zero angular velocity.
+    The model's ``angular_velocity_rps`` holds Euler-angle rates; DIS carries
+    angular velocity about the body axes, so the rates are converted using the
+    current orientation.  Non-rotating algorithms carry zero angular velocity.
     """
 
     if dr_algorithm in ROTATING_DR_ALGORITHMS:
-        return _vec3_any(state.angular_velocity_rps)
+        return euler_rates_to_body_rates(
+            _vec3_any(state.angular_velocity_rps), state.orientation_deg
+        )
     return (0.0, 0.0, 0.0)
 
 
@@ -315,7 +320,13 @@ def _decode_pdu(pdu: EntityStatePdu, origin: Origin, now_s: float) -> EntityStat
         velocity_wire, orientation_deg, origin, dr_algorithm
     )
     angular = pdu.deadReckoningParameters.entityAngularVelocity
-    angular_velocity_rps = (float(angular.x), float(angular.y), float(angular.z))
+    angular_wire = (float(angular.x), float(angular.y), float(angular.z))
+    if dr_algorithm in ROTATING_DR_ALGORITHMS:
+        angular_velocity_rps = body_rates_to_euler_rates(
+            angular_wire, orientation_deg
+        )
+    else:
+        angular_velocity_rps = angular_wire
 
     return EntityState(
         key=_entity_id(pdu),

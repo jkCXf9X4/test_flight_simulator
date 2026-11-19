@@ -118,6 +118,58 @@ def dis_to_rpy_deg(psi_rad: float, theta_rad: float, phi_rad: float) -> Tuple[fl
     return (math.degrees(phi_rad), math.degrees(theta_rad), math.degrees(psi_rad))
 
 
+def euler_rates_to_body_rates(rates_rps: Vec3, orientation_deg: Vec3) -> Vec3:
+    """Convert Z-Y-X Euler-angle rates to body-frame angular rates.
+
+    ``rates_rps`` is ``(roll_dot, pitch_dot, yaw_dot)`` in radians per second
+    for the model's ``(roll, pitch, yaw)`` orientation in degrees.  The
+    orientation uses the Z-Y-X convention: yaw about the local vertical, then
+    pitch, then roll.
+
+    The result is ``(p, q, r)``: angular velocity about the body axes
+    ``x`` forward, ``y`` right, ``z`` down, in radians per second.  These are
+    the axes of the DIS ``EntityAngularVelocity`` field, so the result can be
+    written to the wire unchanged.  The relation is::
+
+        p = roll_dot - yaw_dot * sin(pitch)
+        q = pitch_dot * cos(roll) + yaw_dot * sin(roll) * cos(pitch)
+        r = -pitch_dot * sin(roll) + yaw_dot * cos(roll) * cos(pitch)
+    """
+
+    roll, pitch = math.radians(orientation_deg[0]), math.radians(orientation_deg[1])
+    roll_dot, pitch_dot, yaw_dot = rates_rps
+    sin_roll, cos_roll = math.sin(roll), math.cos(roll)
+    sin_pitch, cos_pitch = math.sin(pitch), math.cos(pitch)
+
+    p = roll_dot - yaw_dot * sin_pitch
+    q = pitch_dot * cos_roll + yaw_dot * sin_roll * cos_pitch
+    r = -pitch_dot * sin_roll + yaw_dot * cos_roll * cos_pitch
+    return (p, q, r)
+
+
+def body_rates_to_euler_rates(body_rates_rps: Vec3, orientation_deg: Vec3) -> Vec3:
+    """Inverse of :func:`euler_rates_to_body_rates`.
+
+    Converts body-frame angular rates ``(p, q, r)`` in radians per second to
+    Z-Y-X Euler-angle rates ``(roll_dot, pitch_dot, yaw_dot)`` for the given
+    ``(roll, pitch, yaw)`` orientation in degrees.  Raises ``ValueError`` when
+    ``pitch`` is within 1e-9 rad of +/-90 degrees: there the Euler yaw and roll
+    rates are not recoverable from body rates (gimbal lock).
+    """
+
+    roll, pitch = math.radians(orientation_deg[0]), math.radians(orientation_deg[1])
+    p, q, r = body_rates_rps
+    sin_roll, cos_roll = math.sin(roll), math.cos(roll)
+    cos_pitch = math.cos(pitch)
+    if abs(cos_pitch) < 1e-9:
+        raise ValueError("Euler rates are undefined at pitch = +/-90 degrees (gimbal lock)")
+
+    roll_dot = p + (q * sin_roll + r * cos_roll) * math.tan(pitch)
+    pitch_dot = q * cos_roll - r * sin_roll
+    yaw_dot = (q * sin_roll + r * cos_roll) / cos_pitch
+    return (roll_dot, pitch_dot, yaw_dot)
+
+
 def heading_deg_from_velocity(velocity_enu_mps: Vec3) -> float:
     """Compass heading in degrees for a velocity given in ENU."""
 

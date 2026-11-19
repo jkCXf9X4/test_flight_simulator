@@ -11,7 +11,7 @@ import pytest
 from opendis.PduFactory import createPdu
 
 from dis_viewer.config import Origin
-from dis_viewer.geo import enu_velocity_to_ecef
+from dis_viewer.geo import enu_velocity_to_ecef, euler_rates_to_body_rates
 from dis_viewer.model import EntityKey, EntityState, EntityType
 from dis_viewer.pdu import (
     BODY_FRAME_DR_ALGORITHMS,
@@ -137,7 +137,8 @@ def test_angular_velocity_round_trips_for_rotating_algorithms(algorithm):
     )
     pdu = createPdu(encoded)
     wire = pdu.deadReckoningParameters.entityAngularVelocity
-    assert close_vec((wire.x, wire.y, wire.z), rates, 1e-6)
+    expected_body = euler_rates_to_body_rates(rates, state.orientation_deg)
+    assert close_vec((wire.x, wire.y, wire.z), expected_body, 1e-6)
     acceleration = pdu.deadReckoningParameters.entityLinearAcceleration
     assert close_vec(
         (acceleration.x, acceleration.y, acceleration.z), (0.0, 0.0, 0.0), 0.0
@@ -145,6 +146,25 @@ def test_angular_velocity_round_trips_for_rotating_algorithms(algorithm):
 
     decoded = decode_datagram(encoded, ORIGIN)[0]
     assert close_vec(decoded.angular_velocity_rps, rates, 1e-6)
+
+
+def test_angular_velocity_wire_is_body_frame_not_euler_rates():
+    state = make_state(
+        orientation_deg=(20.0, 10.0, 45.0),
+        angular_velocity_rps=(0.3, -0.1, 0.2),
+    )
+    encoded = encode_entity_state(state, ORIGIN, 1, dr_algorithm=4, timestamp=1)
+    pdu = createPdu(encoded)
+    wire = pdu.deadReckoningParameters.entityAngularVelocity
+    actual = (wire.x, wire.y, wire.z)
+    expected_body = euler_rates_to_body_rates(
+        state.angular_velocity_rps, state.orientation_deg
+    )
+    assert close_vec(actual, expected_body, 1e-6)
+    assert not close_vec(actual, state.angular_velocity_rps, 1e-3)
+
+    decoded = decode_datagram(encoded, ORIGIN)[0]
+    assert close_vec(decoded.angular_velocity_rps, state.angular_velocity_rps, 1e-6)
 
 
 def test_concatenated_pdus_decode_in_order():
