@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "name": "high_altitude_intercept",
+  "timing": "wall_clock",
+  "instances": [
+    {
+      "name": "instance-1",
+      "command": [
+        "python3",
+        "scripts/run_instance_process.py",
+        "--instance",
+        "1",
+        "--source-ssp",
+        "build/ssp/scenario.ssp",
+        "--out-dir",
+        "build/ssp/instances",
+        "--offset-north-km",
+        "0.0",
+        "--offset-east-km",
+        "0.0"
+      ],
+      "cwd": ".",
+      "env": {},
+      "entities": [
+        {
+          "site": "1",
+          "application": "1",
+          "entity": "1",
+          "marking": ""
+        }
+      ],
+      "telemetry": [
+        {
+          "host": "127.0.0.1",
+          "port": 5501
+        }
+      ],
+      "control": [
+        {
+          "host": "127.0.0.1",
+          "port": 5502
+        }
+      ],
+      "startup_timeout": 30.0
+    },
+    {
+      "name": "instance-2",
+      "command": [
+        "python3",
+        "scripts/run_instance_process.py",
+        "--instance",
+        "2",
+        "--source-ssp",
+        "build/ssp/scenario.ssp",
+        "--out-dir",
+        "build/ssp/instances",
+        "--offset-north-km",
+        "0.0",
+        "--offset-east-km",
+        "5.0"
+      ],
+      "cwd": ".",
+      "env": {},
+      "entities": [
+        {
+          "site": "1",
+          "application": "1",
+          "entity": "2",
+          "marking": ""
+        }
+      ],
+      "telemetry": [
+        {
+          "host": "127.0.0.1",
+          "port": 5503
+        }
+      ],
+      "control": [
+        {
+          "host": "127.0.0.1",
+          "port": 5504
+        }
+      ],
+      "startup_timeout": 30.0
+    }
+  ]
+}

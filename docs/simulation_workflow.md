@@ -123,23 +123,73 @@ The ROS 2 / RViz runtime removal is complete. Remaining follow-up work is tracke
 
 ## Multi-instance runs
 
-`scripts/prepare_instance_bundle.py` copies the prepared SSP, rewrites the bound
-`MissionScenario.ssv`/`HighAltitudeIntercept.ssm` members with per-instance
-`ros2_udp_bridge.telemetry_port`, `ros2_udp_bridge.control_port` and shifted
-`initX_km`/`initY_km`, then writes a per-instance ssp4sim config. The source SSP
-and `config.json` are the only inputs, so this works from a clean `build/ssp`.
+The two-instance scenario is described by a checked-in federation manifest,
+`manifests/two_instances.manifest.json`, in the schema owned by
+`pysos_coordinate`. It is generated from the project scenario settings — not
+hand-edited:
 
 ```bash
 PY=/home/eriro/pwa/2_work/flight_sim/venv/bin/python3
-$PY scripts/prepare_instance_bundle.py --instance 1 --stop-time 60
-$PY scripts/prepare_instance_bundle.py --instance 2 --stop-time 60
-$PY scripts/run_instances.py --instances 2 --stop-time 60
+$PY scripts/generate_instance_manifest.py           # rewrite the manifest
+$PY scripts/generate_instance_manifest.py --check   # fail if it is stale
 ```
 
-`run_instances.py` prepares and launches all instances concurrently with
-`PYTHONPATH=3rd_party/airplane`, waits for them, and reports exit codes. Add
-`--realtime` to pace against the wall clock instead of running as fast as
-possible.
+`scripts/run_instances.py` translates its CLI into that manifest and hands the
+validated spec to `pysos_coordinate.Federation`; the project keeps no process
+supervisor of its own. Per-instance preparation stays in
+`scripts/prepare_instance_bundle.py`, wired as the manifest `command` through
+`scripts/run_instance_process.py`: that wrapper prepares the bundle and then
+`exec`s the ssp4sim run, so the supervised process is the simulation itself.
+
+```bash
+$PY scripts/run_instances.py --dry-run           # validate, launch nothing
+$PY scripts/run_instances.py --instances 2 --stop-time 60
+$PY scripts/run_instances.py --manifest manifests/two_instances.manifest.json
+```
+
+The old flags (`--instances`, `--source-ssp`, `--out-dir`, `--stop-time`,
+`--realtime`, `--python`) keep their meaning and are translated into the same
+manifest. `--realtime` paces against the wall clock, `--log-dir` captures
+per-instance stdout/stderr, and `--manifest` runs a checked-in manifest with
+the project interpreter substituted for the portable `python3` in `command`.
+
+Example (`manifests/two_instances.manifest.json`, reformatted to fit):
+
+```json
+{
+  "schema": 1,
+  "name": "high_altitude_intercept",
+  "timing": "wall_clock",
+  "instances": [
+    {
+      "name": "instance-1",
+      "command": ["python3", "scripts/run_instance_process.py", "--instance", "1",
+                  "--source-ssp", "build/ssp/scenario.ssp",
+                  "--out-dir", "build/ssp/instances",
+                  "--offset-north-km", "0.0", "--offset-east-km", "0.0"],
+      "cwd": ".",
+      "env": {},
+      "entities": [{"site": "1", "application": "1", "entity": "1", "marking": ""}],
+      "telemetry": [{"host": "127.0.0.1", "port": 5501}],
+      "control": [{"host": "127.0.0.1", "port": 5502}],
+      "startup_timeout": 30.0
+    },
+    {
+      "name": "instance-2",
+      "command": ["python3", "scripts/run_instance_process.py", "--instance", "2",
+                  "--source-ssp", "build/ssp/scenario.ssp",
+                  "--out-dir", "build/ssp/instances",
+                  "--offset-north-km", "0.0", "--offset-east-km", "5.0"],
+      "cwd": ".",
+      "env": {},
+      "entities": [{"site": "1", "application": "1", "entity": "2", "marking": ""}],
+      "telemetry": [{"host": "127.0.0.1", "port": 5503}],
+      "control": [{"host": "127.0.0.1", "port": 5504}],
+      "startup_timeout": 30.0
+    }
+  ]
+}
+```
 
 Port map (defaults: telemetry `5501 + 2*(index-1)`, control = telemetry + 1,
 east offset `(index-1)*5 km`, north offset 0):

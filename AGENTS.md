@@ -11,7 +11,9 @@ Key scripts:
 - `scripts/send_pilot_command.py` — manual pilot input on UDP 5502
 - `scripts/run_airplane_scenario.py` — run a batch/realtime scenario from the local bundle
 - `scripts/prepare_instance_bundle.py` — prepare a per-instance SSP bundle and config
-- `scripts/run_instances.py` — prepare and launch multiple instances concurrently
+- `scripts/run_instances.py` — run the instance federation through `pysos_coordinate.Federation`
+- `scripts/generate_instance_manifest.py` — generate/check `manifests/two_instances.manifest.json`
+- `scripts/run_instance_process.py` — manifest command: prepare one bundle, then exec its simulation
 - `scripts/render_showcase_movie.py` — render a showcase movie from a recorded capture (its RViz capture path has been retired)
 
 The aircraft model, SysML architecture, and SSP/FMU build pipeline live in `3rd_party/airplane` (git submodule, handled separately).

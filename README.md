@@ -37,6 +37,8 @@ Other useful entry points:
 - Rebuild SSP/FMU artifacts and refresh the local `build/ssp` bundle: `./scripts/build_airplane.py`
 - Run a batch simulation from the local bundle: `./scripts/run_airplane_scenario.py`
 - Run a realtime batch simulation from the local bundle: `./scripts/run_airplane_scenario.py --realtime`
+- Run the two-instance federation through `pysos_coordinate` (validate first with `--dry-run`): `./scripts/run_instances.py --instances 2`
+- Regenerate the checked-in federation manifest from the scenario settings: `./scripts/generate_instance_manifest.py`
 - Headless Rerun smoke test (no X11, no Podman): `./scripts/container_rerun_smoke.sh`
 - Manual pilot input on UDP 5502: `./scripts/send_pilot_command.py --pitch 0.2 --duration 5`
 - Read the workflow notes: `docs/simulation_workflow.md`

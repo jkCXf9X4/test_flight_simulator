@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
-"""Prepare and run several aircraft instances concurrently from the local bundle.
+"""Run the aircraft scenario as a federation supervised by pysos_coordinate.
 
-Each instance gets its own SSP copy, telemetry/control ports, initial offset,
-working directory, CSV, and log (see ``prepare_instance_bundle.py``). All
-instances are launched together and awaited; their exit codes are reported.
+The project owns scenario settings, not process supervision: this script
+translates its CLI into the federation manifest (see ``instance_manifest.py``)
+and hands it to ``pysos_coordinate.Federation``. Each instance command runs
+``run_instance_process.py``, which prepares the per-instance bundle with
+``prepare_instance_bundle.py`` and then execs the simulation.
+
+The old single-scenario flags (``--instances``, ``--source-ssp``, ``--out-dir``,
+``--stop-time``, ``--realtime``, ``--python``) keep their meaning; ``--manifest``
+runs a checked-in manifest with the project interpreter substituted, and
+``--dry-run`` validates without launching anything.
 """
 
 from __future__ import annotations
 
 import argparse
-import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -22,7 +27,15 @@ WORKSPACE_VENV_PYTHON = REPO_ROOT.parent / "venv" / "bin" / "python"
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from prepare_instance_bundle import DEFAULT_OUT_DIR, DEFAULT_SOURCE_SSP, prepare_instance  # noqa: E402
+from instance_manifest import (
+    DEFAULT_MANIFEST,
+    DEFAULT_OUT_DIR,
+    DEFAULT_SOURCE_SSP,
+    SCENARIO_PATH,
+    build_spec,
+    load_spec,
+)
+from pysos_coordinate import Federation, SpecError, SupervisorError
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -33,6 +46,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--stop-time", type=float, default=None, help="Stop time in seconds for every instance.")
     parser.add_argument("--realtime", action="store_true", help="Pace instances against the wall clock.")
     parser.add_argument("--python", type=Path, default=None, help="Interpreter used for the simulations.")
+    parser.add_argument("--scenario", type=Path, default=SCENARIO_PATH, help="Scenario JSON that names the federation.")
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=None,
+        help=f"Run this manifest as-is instead of translating the flags (checked in: {DEFAULT_MANIFEST.relative_to(REPO_ROOT)}).",
+    )
+    parser.add_argument("--log-dir", type=Path, default=None, help="Capture instance stdout/stderr here.")
+    parser.add_argument("--dry-run", action="store_true", help="Build and validate the manifest, then exit without launching.")
     return parser.parse_args(argv)
 
 
@@ -44,49 +66,68 @@ def resolve_python(override: Path | None) -> str:
     airplane_python = AIRPLANE_ROOT / "venv" / "bin" / "python3"
     if airplane_python.exists():
         return str(airplane_python)
-    return sys.executable
+    return sys.executable or "python3"
+
+
+def apply_python(spec, python: str):
+    """Record the resolved interpreter as every instance's argv[0]."""
+
+    for instance in spec.instances:
+        instance.command[0] = python
+    return spec
+
+
+def describe(spec) -> None:
+    print(f"federation: {spec.name} ({len(spec.instances)} instance(s), schema {spec.schema}, timing {spec.timing.value})")
+    for instance in spec.instances:
+        entity = instance.entities[0] if instance.entities else None
+        telemetry = instance.telemetry[0] if instance.telemetry else None
+        control = instance.control[0] if instance.control else None
+        print(
+            f"  {instance.name:<12} telemetry={telemetry} control={control} "
+            f"entity={entity if entity is not None else '-'}"
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    if args.instances < 1:
-        raise SystemExit(f"--instances must be >= 1, got {args.instances}")
+    try:
+        if args.manifest is not None:
+            spec = load_spec(args.manifest)
+        else:
+            spec = build_spec(
+                instances=args.instances,
+                python=resolve_python(args.python),
+                source_ssp=args.source_ssp,
+                out_dir=args.out_dir,
+                stop_time=args.stop_time,
+                realtime=args.realtime,
+                scenario_path=args.scenario,
+            )
+        spec = apply_python(spec, resolve_python(args.python))
+        spec.validate()
+    except (SpecError, ValueError, OSError) as exc:
+        print(f"invalid: {exc}", file=sys.stderr)
+        return 1
 
-    prepared = [
-        prepare_instance(
-            index,
-            args.source_ssp,
-            args.out_dir,
-            stop_time=args.stop_time,
-            realtime=args.realtime,
-        )
-        for index in range(1, args.instances + 1)
-    ]
+    describe(spec)
+    if args.dry_run:
+        print("ok: manifest is valid; nothing launched")
+        return 0
 
-    python_bin = resolve_python(args.python)
-    env = os.environ.copy()
-    pythonpath = env.get("PYTHONPATH")
-    env["PYTHONPATH"] = str(AIRPLANE_ROOT) if not pythonpath else f"{AIRPLANE_ROOT}:{pythonpath}"
-
-    processes: list[tuple[dict[str, str], subprocess.Popen[bytes]]] = []
-    for summary in prepared:
-        command = [python_bin, "-m", "scripts.cli.scenarios_run_ssp4sim", "--config-path", summary["config"]]
-        print(
-            f"Launching instance {summary['instance']}: "
-            f"telemetry {summary['telemetry_port']}, control {summary['control_port']}, "
-            f"config {summary['config']}",
-            flush=True,
-        )
-        process = subprocess.Popen(command, cwd=REPO_ROOT, env=env)
-        processes.append((summary, process))
-
-    exit_code = 0
-    for summary, process in processes:
-        code = process.wait()
-        print(f"Instance {summary['instance']} exited with {code}", flush=True)
-        if code != 0:
-            exit_code = 1
-    return exit_code
+    federation = Federation(spec, log_dir=args.log_dir)
+    try:
+        result = federation.run()
+    except SupervisorError as exc:
+        print(f"launch failed: {exc}", file=sys.stderr)
+        return 1
+    for status in result.statuses:
+        state = "running" if status.running else f"exit {status.exit_code}"
+        print(f"  {status.name:<12} pid={status.pid} {state}")
+    print(f"duration: {result.duration_s:.3f}s  timed_out: {result.timed_out}")
+    if result.log_dir is not None:
+        print(f"logs: {result.log_dir}")
+    return 0 if result.ok and not result.timed_out else 1
 
 
 if __name__ == "__main__":
