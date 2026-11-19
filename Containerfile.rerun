@@ -1,0 +1,50 @@
+FROM docker.io/library/python:3.11-slim
+
+# ROS-free runtime: the Rerun viewer plus the dis_viewer adapter. No ROS, no
+# colcon, no rclpy. The simulation itself stays on the host.
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Package groups:
+# - GL/EGL/Mesa: wgpu renders through OpenGL/EGL; llvmpipe gives software
+#   rendering when /dev/dri is not passed through.
+# - X11/xcb: the Rerun viewer (winit) talks to the host X server through these
+#   client libraries and the XCB protocol shims.
+# - xkbcommon: keyboard input through the X11 xkb extension.
+# - fonts: UI text; fontconfig resolves the system font fallback.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
+    libegl1 \
+    libgl1-mesa-dri \
+    libglx-mesa0 \
+    libgbm1 \
+    libx11-6 \
+    libx11-xcb1 \
+    libxcb1 \
+    libxcb-render0 \
+    libxcb-shape0 \
+    libxcb-shm0 \
+    libxcb-sync1 \
+    libxcb-randr0 \
+    libxcb-xfixes0 \
+    libxcb-xkb1 \
+    libxcursor1 \
+    libxrandr2 \
+    libxi6 \
+    libxkbcommon0 \
+    libxkbcommon-x11-0 \
+    fonts-dejavu-core \
+    libfontconfig1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+# Requirements first so dependency layers survive dis_viewer edits.
+COPY dis_viewer/requirements.txt /tmp/dis_viewer/requirements.txt
+RUN python -m pip install --no-cache-dir -r /tmp/dis_viewer/requirements.txt pytest
+
+# Standalone copy; the launcher bind-mounts the checkout over /workspace.
+COPY dis_viewer /workspace/dis_viewer
+
+ENTRYPOINT ["python", "-m", "dis_viewer"]
