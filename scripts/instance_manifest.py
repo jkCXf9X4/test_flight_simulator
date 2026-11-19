@@ -56,6 +56,12 @@ def _scenario_name(scenario_path: Path | str) -> str:
     return name
 
 
+def _scenario_key(scenario_path: Path | str) -> str:
+    """Scenario file stem, the key ``run_instance_process.py`` reads."""
+
+    return Path(scenario_path).stem
+
+
 def build_spec(
     *,
     instances: int = 2,
@@ -72,6 +78,7 @@ def build_spec(
     if instances < 1:
         raise ValueError(f"instances must be >= 1, got {instances}")
     federation_name = name or _scenario_name(scenario_path)
+    scenario_key = _scenario_key(scenario_path)
     specs: list[InstanceSpec] = []
     for index in range(1, instances + 1):
         defaults = instance_defaults(index)
@@ -98,6 +105,11 @@ def build_spec(
                 name=f"instance-{index}",
                 command=command,
                 cwd=Path("."),
+                env={
+                    "PYSOS_SCENARIO": scenario_key,
+                    "PYSOS_TELEMETRY_PORT": str(int(defaults["telemetry_port"])),
+                    "PYSOS_CONTROL_PORT": str(int(defaults["control_port"])),
+                },
                 entities=[
                     EntityRef(
                         site=ENTITY_SITE,

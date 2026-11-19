@@ -7,10 +7,14 @@ script rewrites those two archive members in a per-instance copy of the SSP:
 
 * ``ros2_udp_bridge.telemetry_port`` / ``ros2_udp_bridge.control_port``
 * shifted ``initX_km`` (north) / ``initY_km`` (east) when an offset applies
+* the ``MissionScenario.ssv`` waypoint array, ``waypointCount``,
+  ``waypointProximity_km`` and ``targetAirspeed_mps`` selected by ``scenario``
 
 and writes a per-instance ssp4sim config with its own working directory, CSV,
 and log file. The rewrite is deterministic and idempotent, and refuses to write
-an archive when a required mapping could not be injected.
+an archive when a required mapping could not be injected. The scenario JSON is
+converted through the airplane scenario library, so this script does not own a
+second waypoint generator.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -26,11 +31,18 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 AIRPLANE_ROOT = REPO_ROOT / "3rd_party" / "airplane"
 DEFAULT_SOURCE_SSP = REPO_ROOT / "build" / "ssp" / "scenario.ssp"
 DEFAULT_OUT_DIR = REPO_ROOT / "build" / "ssp" / "instances"
+SCENARIO_DIR = AIRPLANE_ROOT / "resources" / "scenarios"
+DEFAULT_SCENARIO = "test_scenario"
 
 if str(AIRPLANE_ROOT) not in sys.path:
     sys.path.insert(0, str(AIRPLANE_ROOT))
 
-from scripts.lib.scenarios.runtime import create_simulation_config, write_simulation_config  # noqa: E402
+from scripts.lib.paths import GENERATED_SCENARIO_SSV
+from scripts.lib.scenarios import preparation
+from scripts.lib.scenarios.runtime import (
+    create_simulation_config,
+    write_simulation_config,
+)
 
 SSV_MEMBER = "resources/MissionScenario.ssv"
 SSM_MEMBER = "resources/HighAltitudeIntercept.ssm"
@@ -44,6 +56,10 @@ TELEMETRY_PARAM = "ros2_udp_bridge.telemetry_port"
 CONTROL_PARAM = "ros2_udp_bridge.control_port"
 INIT_X_PARAM = "initX_km"
 INIT_Y_PARAM = "initY_km"
+WAYPOINT_COUNT_PARAM = "waypointCount"
+WAYPOINT_PROXIMITY_PARAM = "waypointProximity_km"
+TARGET_AIRSPEED_PARAM = "targetAirspeed_mps"
+WAYPOINT_ARRAY_SIZE = preparation.WAYPOINT_ARRAY_SIZE
 
 ET.register_namespace("ssv", NS_SSV)
 ET.register_namespace("ssm", NS_SSM)
@@ -55,7 +71,7 @@ def instance_defaults(index: int) -> dict[str, float | int]:
 
     if index < 1:
         raise SystemExit(f"--instance must be 1-based, got {index}")
-    telemetry_port = 5501 + 2 * (index - 1)
+    telemetry_port = 5510 + 2 * (index - 1)
     control_port = telemetry_port + 1
     if control_port > 65535:
         raise SystemExit(f"Instance {index} port {control_port} exceeds 65535")
@@ -65,6 +81,59 @@ def instance_defaults(index: int) -> dict[str, float | int]:
         "offset_north_km": 0.0,
         "offset_east_km": (index - 1) * 5.0,
     }
+
+
+def _scenario_parameter_set(scenario: str) -> dict[str, tuple[str, str]]:
+    """Convert a scenario JSON through the airplane library into SSV values."""
+
+    path = SCENARIO_DIR / f"{scenario}.json"
+    if not path.is_file():
+        available = sorted(item.stem for item in SCENARIO_DIR.glob("*.json"))
+        raise SystemExit(f"Scenario not found: {path}; available: {available}")
+    scenario_data = json.loads(path.read_text(encoding="utf-8"))
+    points = scenario_data.get("points") or []
+    if not points:
+        raise SystemExit(f"{path}: scenario has no points")
+    preparation.validate_scenario_points(points)
+    local_points = preparation.project_waypoints_to_local_km(points)
+    overrides = scenario_data.get("simulation_overrides") or {}
+    proximity = overrides.get("waypoint_proximity_km", preparation.WAYPOINT_PROXIMITY_KM)
+    airspeed = overrides.get("target_airspeed_mps", overrides.get("cruise_speed_mps"))
+
+    requested = {
+        TARGET_AIRSPEED_PARAM,
+        WAYPOINT_PROXIMITY_PARAM,
+        WAYPOINT_COUNT_PARAM,
+    }
+    for index in range(1, WAYPOINT_ARRAY_SIZE + 1):
+        requested.update((f"waypointX_km[{index}]", f"waypointY_km[{index}]", f"waypointZ_km[{index}]"))
+
+    with tempfile.TemporaryDirectory(prefix="flight-sim-scenario-") as directory:
+        generated = preparation.emit_waypoint_parameter_set(
+            local_points,
+            Path(directory) / f"{scenario}.ssv",
+            baseline_path=GENERATED_SCENARIO_SSV,
+            enable_bridge_input=False,
+            waypoint_proximity_km=float(proximity),
+            target_airspeed_mps=None if airspeed is None else float(airspeed),
+        )
+        params = ET.parse(generated).getroot().find(f"{{{NS_SSV}}}Parameters")
+        if params is None:
+            raise SystemExit(f"{generated}: no <ssv:Parameters> element")
+        values: dict[str, tuple[str, str]] = {}
+        for parameter in params.findall(f"{{{NS_SSV}}}Parameter"):
+            name = parameter.get("name")
+            if name not in requested:
+                continue
+            for child in parameter:
+                values[name] = (_namespace(child.tag)[1], child.get("value", "0"))
+                break
+
+    values[WAYPOINT_COUNT_PARAM] = ("Integer", str(WAYPOINT_ARRAY_SIZE))
+    missing = sorted(requested - set(values))
+    if missing:
+        raise SystemExit(f"{path}: conversion did not produce {missing}")
+    return values
 
 
 def _namespace(tag: str) -> tuple[str, str]:
@@ -227,6 +296,7 @@ def prepare_instance(
     csv_path: Path | None = None,
     log_path: Path | None = None,
     stop_time: float | None = None,
+    scenario: str | None = None,
     realtime: bool = False,
 ) -> dict[str, str]:
     """Write the per-instance SSP and config; return their paths and settings."""
@@ -236,6 +306,7 @@ def prepare_instance(
     control = int(control_port if control_port is not None else defaults["control_port"])
     north = float(offset_north_km if offset_north_km is not None else defaults["offset_north_km"])
     east = float(offset_east_km if offset_east_km is not None else defaults["offset_east_km"])
+    scenario_name = scenario or DEFAULT_SCENARIO
     for label, port in (("--telemetry-port", telemetry), ("--control-port", control)):
         if not 1 <= port <= 65535:
             raise SystemExit(f"{label} out of range: {port}")
@@ -277,11 +348,13 @@ def prepare_instance(
         INIT_X_PARAM: ("Real", f"{base_north + north:.6f}"),
         INIT_Y_PARAM: ("Real", f"{base_east + east:.6f}"),
     }
+    updates.update(_scenario_parameter_set(scenario_name))
     mapping = {
         TELEMETRY_PARAM: TELEMETRY_PARAM,
         CONTROL_PARAM: CONTROL_PARAM,
         INIT_X_PARAM: f"environment.{INIT_X_PARAM}",
         INIT_Y_PARAM: f"environment.{INIT_Y_PARAM}",
+        WAYPOINT_COUNT_PARAM: f"autopilot_module.{WAYPOINT_COUNT_PARAM}",
     }
 
     _validate_ssd(contents[SSD_MEMBER], mapping)
@@ -319,6 +392,7 @@ def prepare_instance(
         "init_x_km": updates[INIT_X_PARAM][1],
         "init_y_km": updates[INIT_Y_PARAM][1],
         "stop_time": f"{resolved_stop_time}",
+        "scenario": scenario_name,
         "realtime": str(realtime).lower(),
     }
 
@@ -336,6 +410,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--csv", type=Path, default=None, help="Per-instance result CSV path.")
     parser.add_argument("--log", type=Path, default=None, help="Per-instance simulation log path.")
     parser.add_argument("--stop-time", type=float, default=None, help="Stop time in seconds.")
+    parser.add_argument("--scenario", default=None, help="Scenario JSON stem (default: test_scenario).")
     parser.add_argument("--realtime", action="store_true", help="Pace the instance against the wall clock.")
     return parser.parse_args(argv)
 
@@ -354,13 +429,14 @@ def main(argv: list[str] | None = None) -> int:
         csv_path=args.csv,
         log_path=args.log,
         stop_time=args.stop_time,
+        scenario=args.scenario,
         realtime=args.realtime,
     )
     print(f"Wrote SSP {summary['ssp']}")
     print(f"Wrote config {summary['config']}")
     print(
         f"Instance {summary['instance']}: telemetry {summary['telemetry_port']}, "
-        f"control {summary['control_port']}, init "
+        f"control {summary['control_port']}, scenario {summary['scenario']}, init "
         f"(north {summary['init_x_km']} km, east {summary['init_y_km']} km)"
     )
     return 0

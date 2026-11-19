@@ -25,32 +25,73 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from prepare_instance_bundle import (
     DEFAULT_OUT_DIR,
+    DEFAULT_SCENARIO,
     DEFAULT_SOURCE_SSP,
+    instance_defaults,
     prepare_instance,
 )
 
 
+def _env_int(name: str) -> int | None:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return None
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise SystemExit(f"{name} must be an integer, got {value!r}") from exc
+
+
+def _env_scenario() -> str | None:
+    value = os.environ.get("PYSOS_SCENARIO")
+    return value.strip() if value and value.strip() else None
+
+
+def _instance_from_telemetry_port(port: int) -> int:
+    """Recover the 1-based index from the manifest's telemetry port plan."""
+
+    offset = port - int(instance_defaults(1)["telemetry_port"])
+    if offset < 0 or offset % 2:
+        raise SystemExit(f"PYSOS_TELEMETRY_PORT={port} is outside the instance port plan")
+    index = offset // 2 + 1
+    if int(instance_defaults(index)["telemetry_port"]) != port:
+        raise SystemExit(f"PYSOS_TELEMETRY_PORT={port} is outside the instance port plan")
+    return index
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--instance", type=int, required=True, help="1-based instance index.")
+    parser.add_argument("--instance", type=int, default=None, help="1-based instance index (or derive it from PYSOS_TELEMETRY_PORT).")
     parser.add_argument("--source-ssp", type=Path, default=DEFAULT_SOURCE_SSP, help="Prepared source SSP archive.")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="Directory for instance bundles.")
+    parser.add_argument("--telemetry-port", type=int, default=None, help="Telemetry UDP port (overrides PYSOS_TELEMETRY_PORT).")
+    parser.add_argument("--control-port", type=int, default=None, help="Control UDP port (overrides PYSOS_CONTROL_PORT).")
     parser.add_argument("--offset-north-km", type=float, default=None, help="Shift initX_km by this many kilometres.")
     parser.add_argument("--offset-east-km", type=float, default=None, help="Shift initY_km by this many kilometres.")
     parser.add_argument("--stop-time", type=float, default=None, help="Stop time in seconds.")
+    parser.add_argument("--scenario", default=None, help="Scenario JSON stem (overrides PYSOS_SCENARIO).")
     parser.add_argument("--realtime", action="store_true", help="Pace the instance against the wall clock.")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    telemetry_env = _env_int("PYSOS_TELEMETRY_PORT")
+    index = args.instance
+    if index is None:
+        if telemetry_env is None:
+            raise SystemExit("--instance is required when PYSOS_TELEMETRY_PORT is unset")
+        index = _instance_from_telemetry_port(telemetry_env)
     summary = prepare_instance(
-        args.instance,
+        index,
         args.source_ssp,
         args.out_dir,
+        telemetry_port=args.telemetry_port if args.telemetry_port is not None else telemetry_env,
+        control_port=args.control_port if args.control_port is not None else _env_int("PYSOS_CONTROL_PORT"),
         offset_north_km=args.offset_north_km,
         offset_east_km=args.offset_east_km,
         stop_time=args.stop_time,
+        scenario=args.scenario or _env_scenario() or DEFAULT_SCENARIO,
         realtime=args.realtime,
     )
     print(json.dumps(summary, sort_keys=True), flush=True)

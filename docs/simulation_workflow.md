@@ -123,18 +123,27 @@ The ROS 2 / RViz runtime removal is complete. Remaining follow-up work is tracke
 
 ## Multi-instance runs
 
-The two-instance scenario is described by a checked-in federation manifest,
-`manifests/two_instances.manifest.json`, in the schema owned by
-`pysos_coordinate`. It is generated from the project scenario settings — not
-hand-edited:
+Two checked-in federation manifests describe independent aircraft instances in
+the schema owned by `pysos_coordinate`:
+
+- `manifests/two_instances.manifest.json` — the generated two-instance default,
+  produced by `scripts/generate_instance_manifest.py`.
+- `manifests/aircraft_federation.manifest.json` — the four-aircraft SoS
+  manifest, lowered from `sos/aircraft_federation.sysml` by
+  `scripts/generate_sos_manifest.py` (RED-1/RED-2/BLUE-1/BLUE-2, four distinct
+  scenarios).
+
+They are generated, not hand-edited:
 
 ```bash
 PY=/home/eriro/pwa/2_work/flight_sim/venv/bin/python3
-$PY scripts/generate_instance_manifest.py           # rewrite the manifest
+$PY scripts/generate_instance_manifest.py           # rewrite the two-instance manifest
 $PY scripts/generate_instance_manifest.py --check   # fail if it is stale
+$PY scripts/generate_sos_manifest.py                # rewrite the SoS manifest
+$PY scripts/generate_sos_manifest.py --check        # fail if it is stale
 ```
 
-`scripts/run_instances.py` translates its CLI into that manifest and hands the
+`scripts/run_instances.py` translates its CLI into a manifest and hands the
 validated spec to `pysos_coordinate.Federation`; the project keeps no process
 supervisor of its own. Per-instance preparation stays in
 `scripts/prepare_instance_bundle.py`, wired as the manifest `command` through
@@ -145,6 +154,7 @@ supervisor of its own. Per-instance preparation stays in
 $PY scripts/run_instances.py --dry-run           # validate, launch nothing
 $PY scripts/run_instances.py --instances 2 --stop-time 60
 $PY scripts/run_instances.py --manifest manifests/two_instances.manifest.json
+$PY scripts/run_instances.py --manifest manifests/aircraft_federation.manifest.json
 ```
 
 The old flags (`--instances`, `--source-ssp`, `--out-dir`, `--stop-time`,
@@ -153,83 +163,91 @@ manifest. `--realtime` paces against the wall clock, `--log-dir` captures
 per-instance stdout/stderr, and `--manifest` runs a checked-in manifest with
 the project interpreter substituted for the portable `python3` in `command`.
 
-Example (`manifests/two_instances.manifest.json`, reformatted to fit):
+### Ports
 
-```json
-{
-  "schema": 1,
-  "name": "high_altitude_intercept",
-  "timing": "wall_clock",
-  "instances": [
-    {
-      "name": "instance-1",
-      "command": ["python3", "scripts/run_instance_process.py", "--instance", "1",
-                  "--source-ssp", "build/ssp/scenario.ssp",
-                  "--out-dir", "build/ssp/instances",
-                  "--offset-north-km", "0.0", "--offset-east-km", "0.0"],
-      "cwd": ".",
-      "env": {},
-      "entities": [{"site": "1", "application": "1", "entity": "1", "marking": ""}],
-      "telemetry": [{"host": "127.0.0.1", "port": 5501}],
-      "control": [{"host": "127.0.0.1", "port": 5502}],
-      "startup_timeout": 30.0
-    },
-    {
-      "name": "instance-2",
-      "command": ["python3", "scripts/run_instance_process.py", "--instance", "2",
-                  "--source-ssp", "build/ssp/scenario.ssp",
-                  "--out-dir", "build/ssp/instances",
-                  "--offset-north-km", "0.0", "--offset-east-km", "5.0"],
-      "cwd": ".",
-      "env": {},
-      "entities": [{"site": "1", "application": "1", "entity": "2", "marking": ""}],
-      "telemetry": [{"host": "127.0.0.1", "port": 5503}],
-      "control": [{"host": "127.0.0.1", "port": 5504}],
-      "startup_timeout": 30.0
-    }
-  ]
-}
-```
+| purpose | ports | notes |
+| --- | --- | --- |
+| instance telemetry | `5510 + 2*(index-1)` | 5510, 5512, 5514, 5516 for four instances |
+| instance control | telemetry + 1 | 5511, 5513, 5515, 5517 |
+| RPR fan-in | **5505** | dedicated recorder port, never an instance port |
 
-Port map (defaults: telemetry `5501 + 2*(index-1)`, control = telemetry + 1,
-east offset `(index-1)*5 km`, north offset 0):
+The old `5501` plan is retired; it collided with RPR `5505` at instance 3.
 
 | instance | telemetry | control | init offset (north, east) |
 | --- | --- | --- | --- |
-| 1 | 5501 | 5502 | 0, 0 km |
-| 2 | 5503 | 5504 | 0, +5 km |
+| 1 | 5510 | 5511 | 0, 0 km |
+| 2 | 5512 | 5513 | 0, +5 km |
+| 3 | 5514 | 5515 | 0, +10 km |
+| 4 | 5516 | 5517 | 0, +15 km |
 
-Each instance writes to `build/ssp/instances/instance-<N>/` (its own SSP,
-`config.json`, `work/`, result CSV, and log). The local origin is still scenario
-`points[0]` and is shared by every instance; the bridge's `reference_*` fields
-stay at their defaults and are not used for framing. Only the initial offset and
-the ports differ between instances.
+The default manifest runs `test_scenario` for both instances. The SoS manifest
+runs `high_altitude_intercept`, `deep_strike_penetration`,
+`cas_multi_store_support`, and `test_scenario` on instances 1-4 respectively.
+
+Each instance writes to `build/ssp/instances/instance-<N>/` when launched from
+the generated manifest (the e2e runner retargets this to its own run
+directory): its own SSP, `config.json`, `work/`, result CSV, and log. The local
+origin is scenario `points[0]`; the bridge's `reference_*` fields stay at their
+defaults and are not used for framing.
+
+### Per-instance scenario flow
+
+The scenario is selected per instance, never shared:
+
+1. The SysML federation author writes `scenario = "<stem>"` on an instance in
+   `sos/aircraft_federation.sysml`.
+2. `scripts/generate_sos_manifest.py` lowers that to the manifest
+   `env.PYSOS_SCENARIO` key (alongside `PYSOS_TELEMETRY_PORT` and
+   `PYSOS_CONTROL_PORT`).
+3. `scripts/run_instance_process.py` reads those variables (explicit CLI flags
+   still win, and the scenario defaults to `test_scenario` when the key is
+   absent). When `--instance` is omitted, it derives the 1-based index from
+   `PYSOS_TELEMETRY_PORT`.
+4. `scripts/prepare_instance_bundle.py` loads
+   `3rd_party/airplane/resources/scenarios/<scenario>.json`, converts it through
+   the airplane scenario library (`scripts/lib/scenarios/preparation.py`), and
+   rewrites the per-instance SSP's `resources/MissionScenario.ssv` members:
+   `waypointX_km[1..10]`, `waypointY_km[1..10]`, `waypointZ_km[1..10]`,
+   `waypointCount`, `targetAirspeed_mps`, and `waypointProximity_km`. The
+   existing `initX_km`/`initY_km` offsets and port rewrite stay unchanged.
+
+Aircraft are peerless: every instance only publishes its own telemetry on its
+own port, and the e2e runner starts one one-way RPR publisher per instance. No
+instance opens another instance's port or ingests another instance's telemetry;
+only the single recorder on UDP 5505 fans the streams in.
 
 ## End-to-end RPR acceptance run
 
 `scripts/run_e2e_rpr.py` composes the whole stack for a fixed simulated
-duration. It launches the two instances through the P2 manifest builder and
+duration. It launches every instance in the selected manifest through
 `pysos_coordinate.Federation`, converts each instance's telemetry JSON to the
-shared `EntityState` and republishes it as RPR payloads on the dedicated RPR
-port **5505** (outside the 5501-5504 federation range), then subscribes that
-stream, decodes it with the scenario's explicit `RprOrigin` (`points[0]`), and
-writes the recorder artifacts. It uses `pysos_interop.rpr.encode_entity_state` /
-`decode_frame` and adds no library code to `pyssp_dev`.
+shared `EntityState`, and republishes it as RPR payloads on the dedicated RPR
+port **5505**, then subscribes that stream, decodes it with the scenario's
+explicit `RprOrigin` (`points[0]`), and writes the recorder artifacts. It uses
+`pysos_interop.rpr.encode_entity_state` / `decode_frame` and adds no library
+code to `pyssp_dev`.
 
 ```bash
 PY=/home/eriro/pwa/2_work/flight_sim/venv/bin/python3
 
-# Fixed 6 s simulated run; origin from the scenario, artifacts under build/runs/
+# Fixed 6 s two-instance run; origin from the scenario, artifacts under build/runs/
 $PY scripts/run_e2e_rpr.py --stop-time 6 --run-dir build/runs/e2e
 
-# Same path against the checked-in manifest (retargeted to the run directory)
+# Same path against the generated manifest (retargeted to the run directory)
 $PY scripts/run_e2e_rpr.py --manifest manifests/two_instances.manifest.json \
     --stop-time 6 --run-dir build/runs/e2e-manifest
+
+# Four aircraft, four scenarios (N comes from the SoS manifest)
+$PY scripts/run_e2e_rpr.py --manifest manifests/aircraft_federation.manifest.json \
+    --stop-time 3 --run-dir build/runs/sos4
+
+# Without a manifest, --instances N builds the default scenario N times
+$PY scripts/run_e2e_rpr.py --instances 2
 
 # Rerun load check (viewer-side exit code)
 $PY -m rerun rrd verify build/runs/e2e/recording.rrd
 
-# Live acceptance test (skips only if the bundle or 5501-5505 is unavailable)
+# Live acceptance test (skips only if the bundle or ports are unavailable)
 $PY -m pytest tests/test_e2e_rpr.py -q
 ```
 
@@ -237,19 +255,28 @@ Run directory layout (`build/runs/e2e/`):
 
 | path | content |
 | --- | --- |
-| `run.json` | scenario, origin, ports, exit codes, sample counts, separation and `pyssp_vv` comparison |
+| `run.json` | scenario, origin, ports, exit codes, sample counts, per-entity path lengths, per-pair separation, and `pyssp_vv` comparison |
 | `truth.jsonl` | `pysos_interop.TruthRecorder` truth stream, one row per entity per sample |
 | `truth.meta.json` | metadata sidecar: run id, origin, entity catalogue, 10 Hz rate, units |
 | `measurements.csv` | `pysos_interop.export_measure_csv` table, `<site>_<app>_<entity>.<channel>` columns |
-| `recording.rrd` | `pysos_interop.rerun_sink.recordings_to_rrd` export (ENU, `world/entity/<slug>/...`) |
-| `comparison.csv` | `pyssp_vv.measure.compare` result, entity 1 vs entity 2 |
+| `recording.rrd` | `pysos_interop.rerun_sink.recordings_to_rrd` export (ENU, `world/entity/<slug>/...`) with per-entity labels and deterministic distinct colours |
+| `comparison.csv` | `pyssp_vv.measure.compare` rows: one self-compare per entity plus every entity pair |
+| `separation.csv` | `time, min_separation_m, nearest_a, nearest_b` over all entity pairs |
 | `instances/instance-<N>/` | per-instance SSP, `config.json`, `work/`, result CSV and log |
-| `logs/instance-<N>.{stdout,stderr}.log` | federation process logs |
+| `logs/<instance>.{stdout,stderr}.log` | federation process logs |
 
-RPR has no timestamp field, so the recorder stamps each decoded frame from its
-per-entity ordinal at the bridge's 10 Hz cadence; both entities therefore share
-one simulation-time base. The bridge emits one all-zero state at `t = 0` before
-the per-instance initial offset applies; that startup frame is recorded and
-reported separately, and the steady-state separation is measured from
-`t = 0.1 s` onward. The default run measures **5000.0 m** between entity 1 and
-entity 2 (origin `points[0]` = `(-2.957519, 39.232955)`, 5 km east offset).
+RPR has no timestamp field, so each publisher owns a per-entity ordinal at the
+bridge's 10 Hz cadence and the recorder stamps sample `n` at
+`n * sample_period_s`. A per-sample barrier writes a row only when every
+expected slug has arrived; a watchdog flushes the oldest partial sample after
+2.0 s, so a missing publisher cannot hang the recorder. Entities absent from a
+partial sample have no values and appear as `nan` in `measurements.csv` and
+`separation.csv`.
+
+The publisher drops the bridge's leading all-zero pre-initialisation record, so
+the recorded artifacts start at the first real packet with zero velocity on its
+first sample and no startup separation frame. The two-instance default measures
+**5000.0 m** between entity 1 and entity 2 (origin `points[0]` =
+`(-2.957519, 39.232955)`, 5 km east offset). The four-aircraft SoS run keeps all
+four aircraft at a few kilometres separation while their path lengths differ
+with their scenarios.

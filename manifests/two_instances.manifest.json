@@ -20,7 +20,11 @@
         "0.0"
       ],
       "cwd": ".",
-      "env": {},
+      "env": {
+        "PYSOS_SCENARIO": "test_scenario",
+        "PYSOS_TELEMETRY_PORT": "5510",
+        "PYSOS_CONTROL_PORT": "5511"
+      },
       "entities": [
         {
           "site": "1",
@@ -32,13 +36,13 @@
       "telemetry": [
         {
           "host": "127.0.0.1",
-          "port": 5501
+          "port": 5510
         }
       ],
       "control": [
         {
           "host": "127.0.0.1",
-          "port": 5502
+          "port": 5511
         }
       ],
       "startup_timeout": 30.0
@@ -60,7 +64,11 @@
         "5.0"
       ],
       "cwd": ".",
-      "env": {},
+      "env": {
+        "PYSOS_SCENARIO": "test_scenario",
+        "PYSOS_TELEMETRY_PORT": "5512",
+        "PYSOS_CONTROL_PORT": "5513"
+      },
       "entities": [
         {
           "site": "1",
@@ -72,13 +80,13 @@
       "telemetry": [
         {
           "host": "127.0.0.1",
-          "port": 5503
+          "port": 5512
         }
       ],
       "control": [
         {
           "host": "127.0.0.1",
-          "port": 5504
+          "port": 5513
         }
       ],
       "startup_timeout": 30.0

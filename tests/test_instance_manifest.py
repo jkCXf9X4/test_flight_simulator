@@ -47,10 +47,20 @@ def test_top_level_keys_and_instance_shape():
 def test_ports_entities_and_separation_match_scenario():
     data = _manifest_json()
     first, second = data["instances"]
-    assert first["telemetry"] == [{"host": "127.0.0.1", "port": 5501}]
-    assert first["control"] == [{"host": "127.0.0.1", "port": 5502}]
-    assert second["telemetry"] == [{"host": "127.0.0.1", "port": 5503}]
-    assert second["control"] == [{"host": "127.0.0.1", "port": 5504}]
+    assert first["telemetry"] == [{"host": "127.0.0.1", "port": 5510}]
+    assert first["control"] == [{"host": "127.0.0.1", "port": 5511}]
+    assert second["telemetry"] == [{"host": "127.0.0.1", "port": 5512}]
+    assert second["control"] == [{"host": "127.0.0.1", "port": 5513}]
+    assert first["env"] == {
+        "PYSOS_SCENARIO": "test_scenario",
+        "PYSOS_TELEMETRY_PORT": "5510",
+        "PYSOS_CONTROL_PORT": "5511",
+    }
+    assert second["env"] == {
+        "PYSOS_SCENARIO": "test_scenario",
+        "PYSOS_TELEMETRY_PORT": "5512",
+        "PYSOS_CONTROL_PORT": "5513",
+    }
 
     assert first["entities"] == [{"site": "1", "application": "1", "entity": "1", "marking": ""}]
     assert second["entities"] == [{"site": "1", "application": "1", "entity": "2", "marking": ""}]
@@ -98,8 +108,8 @@ def test_python_override_changes_only_argv_zero():
 def test_single_instance_uses_first_port_and_no_offset():
     spec = instance_manifest.build_spec(instances=1)
     instance = spec.instances[0]
-    assert [(endpoint.port) for endpoint in instance.telemetry] == [5501]
-    assert [(endpoint.port) for endpoint in instance.control] == [5502]
+    assert [(endpoint.port) for endpoint in instance.telemetry] == [5510]
+    assert [(endpoint.port) for endpoint in instance.control] == [5511]
     command = instance.command
     assert command[command.index("--offset-east-km") + 1] == "0.0"
 
@@ -115,7 +125,7 @@ def test_flags_are_translated_into_stop_time_and_realtime():
     [
         lambda data: data.update(schema=2),
         lambda data: data.update(timing="lock_step"),
-        lambda data: data["instances"][1]["telemetry"][0].update(port=5501),
+        lambda data: data["instances"][1]["telemetry"][0].update(port=5510),
     ],
 )
 def test_invalid_manifests_are_rejected(mutate):

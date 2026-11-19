@@ -74,7 +74,7 @@ def test_launch_flags_are_translated_into_the_spec(monkeypatch):
     command = spec.instances[0].command
     assert command[:2] == ["python3", "scripts/run_instance_process.py"]
     assert command[-3:] == ["--stop-time", "10.0", "--realtime"]
-    assert spec.instances[0].telemetry[0].port == 5501
+    assert spec.instances[0].telemetry[0].port == 5510
 
 
 def test_invalid_manifest_returns_one(tmp_path, capsys):

@@ -51,6 +51,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Run this P2 manifest instead of building it from the flags.",
     )
+    parser.add_argument(
+        "--instances",
+        type=int,
+        default=2,
+        help="Number of instances when no --manifest is given.",
+    )
     parser.add_argument("--python", type=Path, default=None, help="Interpreter for the instances.")
     parser.add_argument(
         "--rpr-port", type=int, default=rpr_e2e.RPR_UDP_PORT, help="Dedicated RPR UDP port."
@@ -71,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
         stop_time=args.stop_time,
         scenario_path=args.scenario,
         manifest_path=args.manifest,
+        instances=args.instances,
         python=args.python,
         rpr_port=args.rpr_port,
         realtime=args.realtime,
@@ -83,17 +90,19 @@ def main(argv: list[str] | None = None) -> int:
         ("measure_csv", result.measure_csv),
         ("rrd", result.rrd_path),
         ("comparison", result.comparison_csv),
+        ("separation", result.separation_csv),
         ("run_json", result.run_json),
     ):
         size = path.stat().st_size if path.exists() else 0
         print(f"  {name:<12} {size:>8} B  {path.name}")
-    print(f"  samples      {result.samples:>8}    frames {result.frames}")
+    print(f"  samples      {result.samples:>8}    frames {result.frames}  partial {result.partial_samples}")
     print(
         "  separation   "
         f"min {result.separation_m['min_m']:.1f} m  "
         f"mean {result.separation_m['mean_m']:.1f} m  "
         f"max {result.separation_m['max_m']:.1f} m"
     )
+    print("  paths        " + ", ".join(f"{slug}={item['path_length_m']:.1f} m" for slug, item in result.entities.items()))
     print(f"  exit codes   {result.exit_codes}  timed_out={result.timed_out}")
     ok = (
         bool(result.exit_codes)
