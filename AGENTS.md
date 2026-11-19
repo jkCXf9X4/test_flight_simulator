@@ -13,7 +13,11 @@ Key scripts:
 - `scripts/prepare_instance_bundle.py` — prepare a per-instance SSP bundle and config
 - `scripts/run_instances.py` — run the instance federation through `pysos_coordinate.Federation`
 - `scripts/generate_instance_manifest.py` — generate/check `manifests/two_instances.manifest.json`
-- `scripts/run_instance_process.py` — manifest command: prepare one bundle, then exec its simulation
+- `scripts/generate_sos_manifest.py` — generate/check the SysML-authored `manifests/aircraft_federation.manifest.json`
+- `scripts/run_instance_process.py` — manifest command: prepare one bundle (scenario and ports from its environment), then exec its simulation
+- `scripts/run_e2e_rpr.py` — run the federation, adapt telemetry to RPR one-way, record truth/CSV/Rerun, summarize separation
+- `scripts/rpr_fanin.py` — per-sample barrier and watchdog that aligns the entity streams before recording
+- `sos/aircraft_federation.sysml` — source of truth for the four-aircraft system of systems
 - `scripts/render_showcase_movie.py` — render a showcase movie from a recorded capture (its RViz capture path has been retired)
 
 The aircraft model, SysML architecture, and SSP/FMU build pipeline live in `3rd_party/airplane` (git submodule, handled separately).
