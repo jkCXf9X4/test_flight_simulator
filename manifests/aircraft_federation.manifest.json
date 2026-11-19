@@ -1,0 +1,143 @@
+{
+  "instances": [
+    {
+      "command": [
+        "python",
+        "scripts/run_instance_process.py"
+      ],
+      "control": [
+        {
+          "host": "127.0.0.1",
+          "port": 5511
+        }
+      ],
+      "cwd": ".",
+      "entities": [
+        {
+          "application": "1",
+          "entity": "1",
+          "marking": "RED-1",
+          "site": "1"
+        }
+      ],
+      "env": {
+        "PYSOS_CONTROL_PORT": "5511",
+        "PYSOS_SCENARIO": "high_altitude_intercept",
+        "PYSOS_TELEMETRY_PORT": "5510"
+      },
+      "name": "red_interceptor",
+      "startup_timeout": 30.0,
+      "telemetry": [
+        {
+          "host": "127.0.0.1",
+          "port": 5510
+        }
+      ]
+    },
+    {
+      "command": [
+        "python",
+        "scripts/run_instance_process.py"
+      ],
+      "control": [
+        {
+          "host": "127.0.0.1",
+          "port": 5513
+        }
+      ],
+      "cwd": ".",
+      "entities": [
+        {
+          "application": "1",
+          "entity": "2",
+          "marking": "RED-2",
+          "site": "1"
+        }
+      ],
+      "env": {
+        "PYSOS_CONTROL_PORT": "5513",
+        "PYSOS_SCENARIO": "deep_strike_penetration",
+        "PYSOS_TELEMETRY_PORT": "5512"
+      },
+      "name": "red_striker",
+      "startup_timeout": 30.0,
+      "telemetry": [
+        {
+          "host": "127.0.0.1",
+          "port": 5512
+        }
+      ]
+    },
+    {
+      "command": [
+        "python",
+        "scripts/run_instance_process.py"
+      ],
+      "control": [
+        {
+          "host": "127.0.0.1",
+          "port": 5515
+        }
+      ],
+      "cwd": ".",
+      "entities": [
+        {
+          "application": "1",
+          "entity": "3",
+          "marking": "BLUE-1",
+          "site": "1"
+        }
+      ],
+      "env": {
+        "PYSOS_CONTROL_PORT": "5515",
+        "PYSOS_SCENARIO": "cas_multi_store_support",
+        "PYSOS_TELEMETRY_PORT": "5514"
+      },
+      "name": "blue_cas",
+      "startup_timeout": 30.0,
+      "telemetry": [
+        {
+          "host": "127.0.0.1",
+          "port": 5514
+        }
+      ]
+    },
+    {
+      "command": [
+        "python",
+        "scripts/run_instance_process.py"
+      ],
+      "control": [
+        {
+          "host": "127.0.0.1",
+          "port": 5517
+        }
+      ],
+      "cwd": ".",
+      "entities": [
+        {
+          "application": "1",
+          "entity": "4",
+          "marking": "BLUE-2",
+          "site": "1"
+        }
+      ],
+      "env": {
+        "PYSOS_CONTROL_PORT": "5517",
+        "PYSOS_SCENARIO": "test_scenario",
+        "PYSOS_TELEMETRY_PORT": "5516"
+      },
+      "name": "blue_baseline",
+      "startup_timeout": 30.0,
+      "telemetry": [
+        {
+          "host": "127.0.0.1",
+          "port": 5516
+        }
+      ]
+    }
+  ],
+  "name": "AircraftFederation",
+  "schema": 1,
+  "timing": "wall_clock"
+}
