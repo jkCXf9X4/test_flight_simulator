@@ -204,3 +204,52 @@ Each instance writes to `build/ssp/instances/instance-<N>/` (its own SSP,
 `points[0]` and is shared by every instance; the bridge's `reference_*` fields
 stay at their defaults and are not used for framing. Only the initial offset and
 the ports differ between instances.
+
+## End-to-end RPR acceptance run
+
+`scripts/run_e2e_rpr.py` composes the whole stack for a fixed simulated
+duration. It launches the two instances through the P2 manifest builder and
+`pysos_coordinate.Federation`, converts each instance's telemetry JSON to the
+shared `EntityState` and republishes it as RPR payloads on the dedicated RPR
+port **5505** (outside the 5501-5504 federation range), then subscribes that
+stream, decodes it with the scenario's explicit `RprOrigin` (`points[0]`), and
+writes the recorder artifacts. It uses `pysos_interop.rpr.encode_entity_state` /
+`decode_frame` and adds no library code to `pyssp_dev`.
+
+```bash
+PY=/home/eriro/pwa/2_work/flight_sim/venv/bin/python3
+
+# Fixed 6 s simulated run; origin from the scenario, artifacts under build/runs/
+$PY scripts/run_e2e_rpr.py --stop-time 6 --run-dir build/runs/e2e
+
+# Same path against the checked-in manifest (retargeted to the run directory)
+$PY scripts/run_e2e_rpr.py --manifest manifests/two_instances.manifest.json \
+    --stop-time 6 --run-dir build/runs/e2e-manifest
+
+# Rerun load check (viewer-side exit code)
+$PY -m rerun rrd verify build/runs/e2e/recording.rrd
+
+# Live acceptance test (skips only if the bundle or 5501-5505 is unavailable)
+$PY -m pytest tests/test_e2e_rpr.py -q
+```
+
+Run directory layout (`build/runs/e2e/`):
+
+| path | content |
+| --- | --- |
+| `run.json` | scenario, origin, ports, exit codes, sample counts, separation and `pyssp_vv` comparison |
+| `truth.jsonl` | `pysos_interop.TruthRecorder` truth stream, one row per entity per sample |
+| `truth.meta.json` | metadata sidecar: run id, origin, entity catalogue, 10 Hz rate, units |
+| `measurements.csv` | `pysos_interop.export_measure_csv` table, `<site>_<app>_<entity>.<channel>` columns |
+| `recording.rrd` | `pysos_interop.rerun_sink.recordings_to_rrd` export (ENU, `world/entity/<slug>/...`) |
+| `comparison.csv` | `pyssp_vv.measure.compare` result, entity 1 vs entity 2 |
+| `instances/instance-<N>/` | per-instance SSP, `config.json`, `work/`, result CSV and log |
+| `logs/instance-<N>.{stdout,stderr}.log` | federation process logs |
+
+RPR has no timestamp field, so the recorder stamps each decoded frame from its
+per-entity ordinal at the bridge's 10 Hz cadence; both entities therefore share
+one simulation-time base. The bridge emits one all-zero state at `t = 0` before
+the per-instance initial offset applies; that startup frame is recorded and
+reported separately, and the steady-state separation is measured from
+`t = 0.1 s` onward. The default run measures **5000.0 m** between entity 1 and
+entity 2 (origin `points[0]` = `(-2.957519, 39.232955)`, 5 km east offset).
