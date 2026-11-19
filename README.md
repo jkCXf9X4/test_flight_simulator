@@ -45,4 +45,4 @@ Other useful entry points:
 
 The supported live setup keeps `ssp4sim` as the simulation master on the host. The native bridge FMU still emits newline-delimited JSON telemetry on UDP 5501; `dis_viewer` consumes it and renders with Rerun. Manual pilot commands go to UDP 5502 through `scripts/send_pilot_command.py`.
 
-The ROS 2 / RViz stack is deprecated. Its scripts, `ros2_bridge/node.py` and the RViz config are kept until the scheduled removal, but new work should use the Rerun path.
+The ROS 2 / RViz runtime has been retired. The live stack is the Rerun viewer described above; the native bridge FMU keeps the legacy `Ros2UdpBridge` name for its unchanged UDP telemetry/control contract.

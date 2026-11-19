@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Render the showcase movie from a recorded demo take.
 
-Combines the raw RViz capture (scripts/record_demo.sh) with the realtime
+The RViz capture path this script consumed has been retired, so the repository
+no longer produces the raw capture and timeline stamps it expects. If you
+supply those inputs yourself, the script combines them with the realtime
 telemetry CSV from the same run into one time-lapsed movie with title cards.
 """
 

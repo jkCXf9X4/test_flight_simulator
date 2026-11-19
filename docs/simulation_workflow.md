@@ -20,9 +20,7 @@ Top-level wrappers:
 - `./scripts/build_rerun_container.sh`
 - `./scripts/container_rerun_smoke.sh`
 - `./scripts/send_pilot_command.py`
-- `./scripts/check_environment.sh` (legacy `--live-container` mode checks the ROS image)
-- `./scripts/run_full_stack_container.sh` (deprecated RViz stack)
-- `./scripts/build_ros2_container.sh` (deprecated ROS 2 image)
+- `./scripts/check_environment.sh` (`--live-container` checks Podman, the Rerun image, and X11; `--source-build` checks the airplane build dependencies)
 
 Recommended live workflow:
 
@@ -58,37 +56,17 @@ RERUN_CONTAINER=1 ./scripts/run_rerun_stack.sh
 
 - `run_rerun_stack.sh` starts `./scripts/run_airplane_scenario.py --realtime`, waits for `build/results/scenario_results_realtime.csv` to advance instead of sleeping, then runs `python -m dis_viewer --source json-udp --sink rerun --spawn --scenario 3rd_party/airplane/resources/scenarios/test_scenario.json --record build/results/dis_viewer.jsonl`.
 - Host execution uses the repo venv. `RERUN_CONTAINER=1` runs the same command inside `Containerfile.rerun` with X11 mounts and `--network=host`, so UDP stays on loopback.
-- Manual pilot input replaces the ROS subscription: `./scripts/send_pilot_command.py --pitch 0.2 --roll -0.1 --throttle 0.7 --duration 5` sends JSON control packets to UDP 5502.
+- Manual pilot input goes through the pilot shim: `./scripts/send_pilot_command.py --pitch 0.2 --roll -0.1 --throttle 0.7 --duration 5` sends JSON control packets to UDP 5502.
 - Headless check, no X11 and no Podman: `./scripts/container_rerun_smoke.sh` writes `/tmp/smoke.rrd` and prints PASS/FAIL.
 - Every live run also writes `build/results/dis_viewer.jsonl`; replay it with `python -m dis_viewer --source jsonl --path build/results/dis_viewer.jsonl --sink rerun --spawn`.
 
-## Interactive target architecture (RViz, deprecated)
+## Retired: ROS 2 / RViz viewer
 
-> Deprecated: the ROS 2 / RViz runtime described in this section is kept for reference and is scheduled for removal. Use the Rerun viewer section above for new work.
-
-The legacy interactive runtime is:
-
-`RViz / ROS 2 nodes <-> ROS2 UDP companion runtime <-> bridge FMU <-> ssp4sim SSP`
-
-Legacy launch commands:
-
-```bash
-./scripts/check_environment.sh --live-container
-./scripts/build_airplane.py
-./scripts/build_ros2_container.sh
-./scripts/run_full_stack_container.sh
-```
-
-Where:
-
-- `ssp4sim` remains the simulation engine and co-simulation master.
-- the native bridge FMU exports simulator state and accepts manual pilot commands.
-- a Python ROS 2 runtime publishes RViz topics and forwards manual control messages back to the bridge.
-- `rviz2` was the primary live visualization frontend (now replaced by Rerun).
+The earlier ROS 2 / RViz runtime has been retired and replaced by the Rerun viewer. Use `./scripts/run_rerun_stack.sh` for live visualization. The native `Ros2UdpBridge` FMU keeps its historical name because the UDP JSON telemetry/control contract is unchanged.
 
 ## Current bridge implementation
 
-The bridge is a native FMI 2.0 co-simulation FMU in C++ (`Ros2UdpBridge`) that acts as a UDP telemetry/control adapter to a ROS 2 / RViz companion runtime, emitting newline-delimited JSON state packets.
+The bridge is a native FMI 2.0 co-simulation FMU in C++ (`Ros2UdpBridge`) that acts as a UDP telemetry/control adapter, emitting newline-delimited JSON state packets. The name is a legacy identifier kept so the UDP contract and SSP members stay stable; it no longer implies a ROS 2 dependency.
 
 Current behavior:
 
@@ -97,16 +75,15 @@ Current behavior:
 - control packets are JSON objects carrying the `PilotCommand` fields
 - when no fresh control packets arrive, the bridge marks itself inactive so `ControlInterface` falls back to the scripted/manual default path
 
-Containerized launcher behavior:
+Containerized viewer behavior:
 
-- `./scripts/check_environment.sh --live-container` validates Podman, the built image, and the X11 requirements before launch
+- `./scripts/check_environment.sh --live-container` validates Podman, the built Rerun image (`test-flight-simulator-rerun`), and the X11 requirements before launch
 - `./scripts/build_airplane.py [scenario-json]` refreshes the local SSP bundle used by both batch and live runs
-- `./scripts/build_ros2_container.sh` builds the reusable Podman image
-- `./scripts/run_full_stack_container.sh` runs the local `build/ssp` scenario, ROS 2 bridge runtime, and RViz entirely inside the container with no extra arguments
-- the container reuses the checked-out workspace via a bind mount and forwards X11 for RViz
+- `./scripts/build_rerun_container.sh` builds the reusable Podman Rerun image from `Containerfile.rerun`
+- `./scripts/run_rerun_stack.sh` runs the realtime simulation on the host and starts the viewer either on the host (default) or, with `RERUN_CONTAINER=1`, in the container with X11 mounts and host networking
+- `./scripts/container_rerun_smoke.sh` runs the headless Rerun recording check without X11 or Podman
 - `./scripts/run_airplane_scenario.py` only runs `pyssp4sim` against the prepared local config and does not repackage scenario artifacts
-- use `./scripts/run_airplane_scenario.py --realtime` when you want the local realtime config without RViz
-- host-side live RViz launching has been removed from the repository
+- use `./scripts/run_airplane_scenario.py --realtime` when you want the local realtime config without a viewer
 
 Implementation/build notes:
 
@@ -142,7 +119,7 @@ The aircraft package now includes the native bridge in the packaged SSP workflow
 
 ## Expected next implementation steps
 
-1. Remove the deprecated ROS 2 / RViz scripts and RViz config once the Rerun path has soaked.
+The ROS 2 / RViz runtime removal is complete. Remaining follow-up work is tracked in `TODO.md`.
 
 ## Multi-instance runs
 

@@ -4,7 +4,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AIRPLANE_ROOT="$REPO_ROOT/3rd_party/airplane"
-IMAGE_NAME="${IMAGE_NAME:-test-flight-simulator-ros2:kilted}"
+IMAGE_NAME="${IMAGE_NAME:-test-flight-simulator-rerun:latest}"
 MODE="${1:---live-container}"
 
 fail() {
@@ -17,7 +17,7 @@ check_podman() {
 }
 
 check_image_present() {
-  podman image exists "$IMAGE_NAME" || fail "Podman image $IMAGE_NAME is missing. Run ./scripts/build_ros2_container.sh"
+  podman image exists "$IMAGE_NAME" || fail "Podman image $IMAGE_NAME is missing. Run ./scripts/build_rerun_container.sh"
 }
 
 check_x11() {
@@ -32,12 +32,6 @@ check_x11() {
 
   local xauth_path="${XAUTHORITY:-$HOME/.Xauthority}"
   [[ -f "$xauth_path" ]] || fail "Xauthority file not found at $xauth_path"
-}
-
-check_host_ros_python() {
-  command -v python3 >/dev/null 2>&1 || fail "python3 is not on PATH"
-  python3 -c "import rclpy" >/dev/null 2>&1 || fail "python3 cannot import rclpy on the host"
-  python3 -c "import ros2_bridge.node" >/dev/null 2>&1 || fail "python3 cannot import ros2_bridge.node on the host"
 }
 
 check_airplane_python() {
@@ -62,14 +56,11 @@ case "$MODE" in
   --source-build)
     check_airplane_python
     ;;
-  --host-ros-python)
-    check_host_ros_python
-    ;;
   --container-build)
     check_podman
     ;;
   *)
-    fail "unknown mode $MODE. Expected one of: --live-container, --source-build, --host-ros-python, --container-build"
+    fail "unknown mode $MODE. Expected one of: --live-container, --source-build, --container-build"
     ;;
 esac
 
