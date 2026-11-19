@@ -74,7 +74,7 @@ from pysos_interop import (
 )
 from pysos_interop.rerun_sink import recordings_to_rrd
 from pysos_interop.rpr import RprOrigin, decode_frame, encode_entity_state
-from pysos_interop.transport import Channel, ChannelTimeoutError
+from pysos_interop.transport import Channel
 from pysos_interop.truth import MEASURE_UNITS, entity_slug, iter_truth
 from rpr_fanin import DEFAULT_WATCHDOG_S, SampleFanIn
 
@@ -92,6 +92,90 @@ SAMPLE_PERIOD_S = 0.1
 
 #: How long a reader keeps draining after the stop signal before it exits.
 _DRAIN_S = 0.4
+
+#: Receive timeout for the telemetry and RPR sockets.
+_RECV_TIMEOUT_S = 0.05
+
+#: Requested socket receive buffer. Linux silently caps this at rmem_max, so
+#: asking for far more than the cap is the portable way to get the maximum.
+_RCVBUF_BYTES = 4 << 20
+
+#: Upper bound on datagrams pulled in one non-blocking drain burst.
+_RECV_BURST_LIMIT = 4096
+
+
+def _open_receiver(host: str, port: int) -> socket.socket:
+    """Bind a UDP receiver with the largest receive buffer the kernel allows."""
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, _RCVBUF_BYTES)
+        sock.bind((host, int(port)))
+        sock.settimeout(_RECV_TIMEOUT_S)
+    except BaseException:
+        sock.close()
+        raise
+    return sock
+
+
+def _drain_burst(sock: socket.socket, first: bytes) -> list[bytes]:
+    """Return *first* plus every datagram already queued behind it.
+
+    Draining the kernel buffer before parsing/encoding keeps per-packet CPU
+    work off the receive path: a batch-mode federation emits its 10 Hz
+    telemetry in a burst, and a small default ``SO_RCVBUF`` overflows if the
+    consumer encodes each packet between receives.
+    """
+
+    datagrams = [first]
+    sock.setblocking(False)
+    try:
+        while len(datagrams) < _RECV_BURST_LIMIT:
+            try:
+                datagrams.append(sock.recv(65535))
+            except BlockingIOError:
+                break
+            except OSError:
+                break
+    finally:
+        sock.settimeout(_RECV_TIMEOUT_S)
+    return datagrams
+
+
+#: Kernel UDP counters we snapshot around a run to expose socket-buffer loss.
+_UDP_SNMP_COUNTERS = (
+    "InDatagrams",
+    "NoPorts",
+    "InErrors",
+    "OutDatagrams",
+    "RcvbufErrors",
+    "SndbufErrors",
+)
+
+
+def _udp_kernel_counters() -> dict[str, int]:
+    """Read the kernel's UDP counters from ``/proc/net/snmp`` (Linux only)."""
+
+    try:
+        text = Path("/proc/net/snmp").read_text(encoding="ascii")
+    except OSError:  # pragma: no cover - non-Linux hosts
+        return {}
+    header: list[str] = []
+    for line in text.splitlines():
+        name, _, rest = line.partition(":")
+        if name != "Udp":
+            continue
+        fields = rest.split()
+        if not header:
+            header = fields
+            continue
+        return {
+            key: int(value)
+            for key, value in zip(header, fields, strict=False)
+            if key in _UDP_SNMP_COUNTERS
+        }
+    return {}
 
 #: Deterministic, visually distinct colours keyed by sorted entity slug.
 _ENTITY_COLORS = (
@@ -221,6 +305,11 @@ class TelemetryRprPublisher(threading.Thread):
         self.sample_period_s = float(sample_period_s)
         self.stop_event = threading.Event()
         self.ready = threading.Event()
+        #: Telemetry datagrams read off the UDP socket (pre-init record included).
+        self.telemetry_datagrams = 0
+        #: Telemetry records parsed out of those datagrams.
+        self.telemetry_packets = 0
+        #: Records published as RPR payloads (leading pre-init record excluded).
         self.sent = 0
         self.error: BaseException | None = None
         self.error_traceback = ""
@@ -251,10 +340,7 @@ class TelemetryRprPublisher(threading.Thread):
         receiver: socket.socket | None = None
         sender: Channel | None = None
         try:
-            receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            receiver.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            receiver.bind((self.telemetry_host, self.telemetry_port))
-            receiver.settimeout(0.05)
+            receiver = _open_receiver(self.telemetry_host, self.telemetry_port)
             sender = Channel(self.rpr_host, self.rpr_port).open()
             self.ready.set()
 
@@ -267,11 +353,14 @@ class TelemetryRprPublisher(threading.Thread):
                         break
                     continue
                 last_rx = time.monotonic()
-                for packet in parse_state_packets(data.decode("utf-8", "replace")):
-                    state = self._next_state(packet)
-                    if state is None:
-                        continue
-                    sender.send(encode_entity_state(state, origin=self.origin))
+                for datagram in _drain_burst(receiver, data):
+                    self.telemetry_datagrams += 1
+                    for packet in parse_state_packets(datagram.decode("utf-8", "replace")):
+                        self.telemetry_packets += 1
+                        state = self._next_state(packet)
+                        if state is None:
+                            continue
+                        sender.send(encode_entity_state(state, origin=self.origin))
         except BaseException as exc:  # noqa: BLE001 - reported to the orchestrator
             self.error = exc
             self.error_traceback = traceback.format_exc()
@@ -309,6 +398,9 @@ class RprTruthRecorder(threading.Thread):
         self.stop_event = threading.Event()
         self.ready = threading.Event()
         self.frames: dict[str, int] = defaultdict(int)
+        #: RPR datagrams read off the recorder socket.
+        self.datagrams = 0
+        self.decode_errors = 0
         self.recorder: TruthRecorder | None = None
         self.fan_in = SampleFanIn(
             self.expected_keys,
@@ -326,9 +418,9 @@ class RprTruthRecorder(threading.Thread):
         self.recorder.write_sample(states)
 
     def run(self) -> None:  # pragma: no cover - exercised end to end
-        channel: Channel | None = None
+        receiver: socket.socket | None = None
         try:
-            channel = Channel(self.host, self.port, bind=True).open()
+            receiver = _open_receiver(self.host, self.port)
             self.recorder = TruthRecorder(
                 self.truth_path,
                 run_id=self.run_id,
@@ -341,20 +433,26 @@ class RprTruthRecorder(threading.Thread):
             last_rx = time.monotonic()
             while True:
                 try:
-                    data = channel.recv(timeout=0.05)
-                except ChannelTimeoutError:
+                    data, _ = receiver.recvfrom(65535)
+                except TimeoutError:
                     self.fan_in.poll()
                     if self.stop_event.is_set() and time.monotonic() - last_rx > _DRAIN_S:
                         break
                     continue
                 last_rx = time.monotonic()
-                frame = decode_frame(data, origin=self.origin)
-                slug = entity_slug(frame.state.key)
-                self.frames[slug] += 1
-                timestamp = self.fan_in.ordinals[slug] * self.sample_period_s
-                self.fan_in.observe(
-                    slug, dataclasses.replace(frame.state, timestamp=timestamp)
-                )
+                for datagram in _drain_burst(receiver, data):
+                    self.datagrams += 1
+                    try:
+                        frame = decode_frame(datagram, origin=self.origin)
+                    except BaseException:
+                        self.decode_errors += 1
+                        raise
+                    slug = entity_slug(frame.state.key)
+                    self.frames[slug] += 1
+                    timestamp = self.fan_in.ordinals[slug] * self.sample_period_s
+                    self.fan_in.observe(
+                        slug, dataclasses.replace(frame.state, timestamp=timestamp)
+                    )
 
             self.fan_in.flush()
             self.samples = self.fan_in.samples
@@ -365,8 +463,8 @@ class RprTruthRecorder(threading.Thread):
         finally:
             if self.recorder is not None:
                 self.recorder.close()
-            if channel is not None:
-                channel.close()
+            if receiver is not None:
+                receiver.close()
 
 
 @dataclass
@@ -392,6 +490,12 @@ class E2EResult:
     entities: dict[str, dict[str, Any]] = field(default_factory=dict)
     comparison: dict[str, Any] = field(default_factory=dict)
     partial_samples: int = 0
+    #: Per-publisher telemetry/send counters keyed by entity slug.
+    publishers: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: Recorder receive/decode counters plus any swallowed thread exception.
+    recorder: dict[str, Any] = field(default_factory=dict)
+    #: Kernel UDP counter delta observed across the run.
+    kernel_udp: dict[str, int] = field(default_factory=dict)
 
 
 def _set_option(command: list[str], flag: str, value: str) -> None:
@@ -763,6 +867,7 @@ def run_e2e(
         truth_path=truth_path,
         run_id=run_id,
     )
+    kernel_before = _udp_kernel_counters()
     recorder.start()
     if not recorder.ready.wait(timeout=5.0):
         raise RuntimeError("RPR recorder did not bind the RPR port")
@@ -789,15 +894,76 @@ def run_e2e(
         recorder.stop_event.set()
         recorder.join(timeout=20.0)
 
+    kernel_after = _udp_kernel_counters()
+    kernel_udp: dict[str, int] = {}
+    if kernel_before and kernel_after:
+        kernel_udp = {
+            key: kernel_after.get(key, 0) - kernel_before.get(key, 0)
+            for key in sorted(set(kernel_before) | set(kernel_after))
+        }
+    publisher_stats = {
+        entity_slug(publisher.key): {
+            "name": publisher.name,
+            "telemetry_port": publisher.telemetry_port,
+            "telemetry_datagrams": publisher.telemetry_datagrams,
+            "telemetry_packets": publisher.telemetry_packets,
+            "sent": publisher.sent,
+            "error": repr(publisher.error) if publisher.error is not None else None,
+            "error_traceback": publisher.error_traceback or None,
+        }
+        for publisher in publishers
+    }
+    recorder_stats = {
+        "datagrams": recorder.datagrams,
+        "sent": sum(publisher.sent for publisher in publishers),
+        "missing": sum(publisher.sent for publisher in publishers)
+        - recorder.datagrams,
+        "frames": dict(recorder.frames),
+        "decode_errors": recorder.decode_errors,
+        "samples": recorder.samples,
+        "partial_samples": int(recorder.fan_in.partial_samples),
+        "error": repr(recorder.error) if recorder.error is not None else None,
+        "error_traceback": recorder.error_traceback or None,
+    }
+    transport = {
+        "publishers": publisher_stats,
+        "recorder": recorder_stats,
+        "kernel_udp": kernel_udp,
+    }
+
+    # A thread that died must leave evidence in run.json, not only in a raised
+    # exception (the caller may be a script that discards stderr).
+    thread_failures = []
     if recorder.error is not None:
-        raise RuntimeError(
+        thread_failures.append(
             f"RPR recorder failed: {recorder.error!r}\n{recorder.error_traceback}"
         )
     for publisher in publishers:
         if publisher.error is not None:
-            raise RuntimeError(
+            thread_failures.append(
                 f"{publisher.name} failed: {publisher.error!r}\n{publisher.error_traceback}"
             )
+    if thread_failures:
+        (run_dir / "run.json").write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "run_id": run_id,
+                    "federation": spec.name,
+                    "stop_time_s": float(stop_time),
+                    "realtime": bool(realtime),
+                    "exit_codes": dict(result.exit_codes),
+                    "timed_out": bool(result.timed_out),
+                    "transport": transport,
+                    "errors": thread_failures,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        raise RuntimeError("\n".join(thread_failures))
 
     export_measure_csv(truth_path, measure_csv)
     recordings_to_rrd(
@@ -843,6 +1009,9 @@ def run_e2e(
         entities=entities,
         comparison=comparison,
         partial_samples=int(recorder.fan_in.partial_samples),
+        publishers=publisher_stats,
+        recorder=recorder_stats,
+        kernel_udp=kernel_udp,
     )
 
     summary = {
@@ -868,6 +1037,11 @@ def run_e2e(
         "frames": e2e.frames,
         "samples": e2e.samples,
         "partial_samples": e2e.partial_samples,
+        "transport": {
+            "publishers": e2e.publishers,
+            "recorder": e2e.recorder,
+            "kernel_udp": e2e.kernel_udp,
+        },
         "instance_sim_durations_s": e2e.instance_sim_durations,
         "entities": e2e.entities,
         "pairs": e2e.pairs,
@@ -888,6 +1062,14 @@ def run_e2e(
 
     log(f"artifacts: {run_dir}")
     log(f"samples: {e2e.samples}, frames: {e2e.frames}")
+    if e2e.recorder.get("missing", 0) or e2e.kernel_udp.get("RcvbufErrors", 0):
+        log(
+            "WARNING: UDP loss detected: "
+            f"rpr_sent={e2e.recorder['sent']} rpr_received={e2e.recorder['datagrams']} "
+            f"missing={e2e.recorder['missing']} "
+            f"kernel_rcvbuf_errors={e2e.kernel_udp.get('RcvbufErrors', 0)} "
+            "(see transport in run.json)"
+        )
     log(f"separation: {separation['min_m']:.1f}..{separation['max_m']:.1f} m (mean {separation['mean_m']:.1f})")
     log(f"paths: { {slug: round(value['path_length_m'], 1) for slug, value in entities.items()} }")
     return e2e

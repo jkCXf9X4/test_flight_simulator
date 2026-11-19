@@ -273,6 +273,16 @@ expected slug has arrived; a watchdog flushes the oldest partial sample after
 partial sample have no values and appear as `nan` in `measurements.csv` and
 `separation.csv`.
 
+Batch mode runs 20 s of 10 Hz telemetry as a burst several times faster than
+realtime, so the per-instance telemetry sockets and the shared RPR socket are
+finite kernel UDP buffers. `run.json` now carries a `transport` block with
+per-slug telemetry datagrams/packets received, RPR payloads sent, recorder
+datagrams decoded, and the kernel UDP counter delta (`RcvbufErrors`); a non-zero
+`RcvbufErrors` that matches a frame deficit means the kernel dropped datagrams,
+not that the recorder logic lost them. Publisher/recorder thread exceptions are
+recorded there too (`error`, `error_traceback`), so a dead thread leaves
+evidence even when the run is started from a script.
+
 The publisher drops the bridge's leading all-zero pre-initialisation record, so
 the recorded artifacts start at the first real packet with zero velocity on its
 first sample and no startup separation frame. The two-instance default measures

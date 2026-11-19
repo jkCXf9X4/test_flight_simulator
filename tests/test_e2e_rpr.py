@@ -201,6 +201,18 @@ def test_four_aircraft_federation_runs_distinct_scenarios(tmp_path):
     assert len(finite_pairs) >= 2
     assert len(finite_pairs) == 6
 
+    summary = json.loads(result.run_json.read_text(encoding="utf-8"))
+    transport = summary["transport"]
+    assert set(transport["publishers"]) == slugs
+    assert transport["recorder"]["error"] is None
+    for stats in transport["publishers"].values():
+        assert stats["error"] is None
+        assert stats["telemetry_datagrams"] >= stats["sent"] >= 0
+    assert transport["recorder"]["datagrams"] >= sum(
+        transport["recorder"]["frames"].values()
+    )
+    assert {"InDatagrams", "RcvbufErrors"} <= set(transport["kernel_udp"])
+
     lengths = [item["path_length_m"] for item in result.entities.values()]
     assert all(length > 100.0 for length in lengths)
     assert len({round(length, 3) for length in lengths}) == 4
@@ -341,3 +353,29 @@ def test_publisher_uses_manifest_marking_in_encoded_frame():
 def test_publisher_falls_back_to_ac_marking_when_manifest_marking_empty():
     assert _roundtrip_marking(_publisher(marking="")) == "AC-1"
 
+
+
+def test_drain_burst_returns_every_queued_datagram():
+    """The receive path empties the kernel queue before doing per-packet work.
+
+    Regression for the batch-mode overflow: the consumers used to parse and
+    protobuf-encode/decode one datagram between receives, so a fast simulator
+    burst could fill the default 208 KiB receive buffer and the kernel dropped
+    packets. ``_drain_burst`` must return the datagram that blocked plus every
+    datagram already queued behind it, in order.
+    """
+
+    receiver = rpr_e2e._open_receiver("127.0.0.1", 0)
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        port = receiver.getsockname()[1]
+        payloads = [f"telemetry-{index:04d}".encode() for index in range(64)]
+        for payload in payloads:
+            sender.sendto(payload, ("127.0.0.1", port))
+        first, _ = receiver.recvfrom(65535)
+        burst = rpr_e2e._drain_burst(receiver, first)
+    finally:
+        sender.close()
+        receiver.close()
+
+    assert burst == payloads
