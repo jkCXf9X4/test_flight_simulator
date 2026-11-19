@@ -36,7 +36,7 @@ def test_linear_motion_matches_closed_form(algorithm):
     assert out.t_s == pytest.approx(START_S + DT_S)
     assert out.position_enu_m == pytest.approx(expected)
     assert out.velocity_enu_mps == pytest.approx(VELOCITY)
-    # Phase 1 has no angular velocity, so orientation is static.
+    # Default angular velocity is zero, so orientation stays static.
     assert out.orientation_deg == pytest.approx(ORIENTATION)
 
 
@@ -89,13 +89,50 @@ def test_mark_stale_uses_strict_threshold_and_copies():
 
 
 @pytest.mark.parametrize("algorithm", [3, 4, 7, 8])
-def test_optional_angular_velocity_is_integrated(algorithm):
-    state = make_state()
-    state.angular_velocity_rps = (0.0, 0.0, math.pi / 2.0)  # optional attribute
+def test_angular_velocity_is_integrated(algorithm):
+    state = make_state(angular_velocity_rps=(0.0, 0.0, math.pi / 2.0))
 
     out = extrapolate(state, START_S + 2.0, algorithm)
 
     assert out.orientation_deg == pytest.approx((5.0, 10.0, 195.0), abs=1e-9)
+
+
+def test_algorithm_four_integrates_orientation_and_position():
+    rates = (math.radians(10.0), math.radians(-5.0), math.radians(30.0))
+    state = make_state(angular_velocity_rps=rates)
+
+    out = extrapolate(state, START_S + DT_S, 4)
+
+    expected_position = tuple(p + v * DT_S for p, v in zip(POSITION, VELOCITY))
+    expected_orientation = (
+        ORIENTATION[0] + math.degrees(rates[0]) * DT_S,
+        ORIENTATION[1] + math.degrees(rates[1]) * DT_S,
+        ORIENTATION[2] + math.degrees(rates[2]) * DT_S,
+    )
+    assert out.position_enu_m == pytest.approx(expected_position)
+    assert out.orientation_deg == pytest.approx(expected_orientation)
+
+
+def test_algorithm_three_positions_unchanged_but_orientation_rotates():
+    rates = (0.0, 0.0, math.radians(20.0))
+    state = make_state(angular_velocity_rps=rates)
+
+    out = extrapolate(state, START_S + DT_S, 3)
+
+    expected_position = tuple(p + v * DT_S for p, v in zip(POSITION, VELOCITY))
+    assert out.position_enu_m == pytest.approx(expected_position)
+    assert out.orientation_deg == pytest.approx(
+        (5.0, 10.0, 15.0 + 20.0 * DT_S)
+    )
+
+
+@pytest.mark.parametrize("algorithm", [3, 4, 7, 8])
+def test_zero_angular_velocity_leaves_orientation_alone(algorithm):
+    state = make_state(angular_velocity_rps=(0.0, 0.0, 0.0))
+
+    out = extrapolate(state, START_S + 100.0, algorithm)
+
+    assert out.orientation_deg == pytest.approx(ORIENTATION)
 
 
 def test_linear_algorithm_does_not_rotate():
@@ -114,6 +151,7 @@ def test_input_state_is_not_mutated():
         state.position_enu_m,
         state.orientation_deg,
         state.velocity_enu_mps,
+        state.angular_velocity_rps,
         state.stale,
     )
 
@@ -126,5 +164,6 @@ def test_input_state_is_not_mutated():
         state.position_enu_m,
         state.orientation_deg,
         state.velocity_enu_mps,
+        state.angular_velocity_rps,
         state.stale,
     ) == snapshot

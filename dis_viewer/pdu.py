@@ -12,6 +12,10 @@ Linear velocity follows the selected dead-reckoning algorithm:
 The body frame is the usual aerospace frame (x forward, y right, z down),
 with yaw measured clockwise from north.  Only the velocity field changes
 frame; position is always ECEF.
+
+Angular velocity is carried for rotating algorithms 3, 4, 7 and 8.  The model's
+Euler-angle rates are sent as-is; the world/body distinction is treated as a
+local-frame approximation, and linear acceleration is always zero.
 """
 
 from __future__ import annotations
@@ -85,6 +89,7 @@ DR_ALGORITHMS = {
 # Wire velocity frame by algorithm, as required by the phase-1 contract.
 WORLD_FRAME_DR_ALGORITHMS = frozenset({2, 3, 5, 6, 9})
 BODY_FRAME_DR_ALGORITHMS = frozenset({4, 7, 8})
+ROTATING_DR_ALGORITHMS = frozenset({3, 4, 7, 8})
 KNOWN_DR_ALGORITHMS = frozenset(range(10))
 
 Vec3Matrix = Tuple[Vec3, Vec3, Vec3]
@@ -168,6 +173,23 @@ def _wire_velocity(
     return enu_velocity_to_ecef(velocity_enu, origin)
 
 
+def _wire_angular_velocity(state: EntityState, dr_algorithm: int) -> Vec3:
+    """Return the DIS angular velocity for a rotating algorithm.
+
+    The model's rates are Euler-angle rates in the local frame; they are sent
+    as-is rather than converted between world and body frames.  Non-rotating
+    algorithms carry zero angular velocity.
+    """
+
+    if dr_algorithm in ROTATING_DR_ALGORITHMS:
+        return _vec3_any(state.angular_velocity_rps)
+    return (0.0, 0.0, 0.0)
+
+
+def _vec3_any(value: object) -> Vec3:
+    return (float(value[0]), float(value[1]), float(value[2]))  # type: ignore[index]
+
+
 def _clean_marking(marking: str) -> str:
     return str(marking).encode("ascii", "ignore").decode("ascii")[:11]
 
@@ -201,6 +223,7 @@ def encode_entity_state(
         state.velocity_enu_mps, state.orientation_deg, origin, dr_algorithm
     )
     psi, theta, phi = rpy_deg_to_dis(*state.orientation_deg)
+    angular_wire = _wire_angular_velocity(state, dr_algorithm)
     kind, domain, country, category, subcategory, specific, extra = (
         state.entity_type.as_tuple()
     )
@@ -218,7 +241,9 @@ def encode_entity_state(
         entityLocation=WorldCoordinates(*position_ecef),
         entityOrientation=EulerAngles(psi, theta, phi),
         deadReckoningParameters=DeadReckoningParameters(
-            deadReckoningAlgorithm=dr_algorithm
+            deadReckoningAlgorithm=dr_algorithm,
+            entityLinearAcceleration=Vector3Float(),
+            entityAngularVelocity=Vector3Float(*angular_wire),
         ),
         marking=_marking_record(state.marking),
     )
@@ -289,6 +314,8 @@ def _decode_pdu(pdu: EntityStatePdu, origin: Origin, now_s: float) -> EntityStat
     velocity_enu = _velocity_from_wire(
         velocity_wire, orientation_deg, origin, dr_algorithm
     )
+    angular = pdu.deadReckoningParameters.entityAngularVelocity
+    angular_velocity_rps = (float(angular.x), float(angular.y), float(angular.z))
 
     return EntityState(
         key=_entity_id(pdu),
@@ -296,6 +323,7 @@ def _decode_pdu(pdu: EntityStatePdu, origin: Origin, now_s: float) -> EntityStat
         position_enu_m=position_enu,
         orientation_deg=orientation_deg,
         velocity_enu_mps=velocity_enu,
+        angular_velocity_rps=angular_velocity_rps,
         entity_type=_entity_type(pdu),
         force_id=int(pdu.forceId),
         marking=pdu.marking.charactersString(),

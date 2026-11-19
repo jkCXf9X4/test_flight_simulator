@@ -56,6 +56,11 @@ class EntityState:
     """Viewer-side entity state in local ENU metres.
 
     ``orientation_deg`` is ``(roll, pitch, yaw)`` in degrees.
+    ``angular_velocity_rps`` is the rate of change of those roll/pitch/yaw Euler
+    angles in radians per second.  It is a local-frame approximation: each rate
+    is applied to its own Euler angle rather than composed as an exact
+    body-frame rotation, which is adequate for the small angles seen between
+    telemetry packets.
     """
 
     key: EntityKey
@@ -63,6 +68,7 @@ class EntityState:
     position_enu_m: Vec3 = (0.0, 0.0, 0.0)
     orientation_deg: Vec3 = (0.0, 0.0, 0.0)
     velocity_enu_mps: Vec3 = (0.0, 0.0, 0.0)
+    angular_velocity_rps: Vec3 = (0.0, 0.0, 0.0)
     entity_type: EntityType = field(default_factory=EntityType)
     force_id: int = 1
     marking: str = ""

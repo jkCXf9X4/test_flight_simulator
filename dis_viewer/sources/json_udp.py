@@ -8,6 +8,7 @@ in the ROS 2 workspace and ``rclpy`` is forbidden in ``dis_viewer``.
 from __future__ import annotations
 
 import json
+import math
 import select
 import socket
 import time
@@ -21,6 +22,23 @@ from ..model import EntityState, Vec3
 # host clock gives them the same receive time, so successive packets are
 # spaced by the nominal period instead of a zero-length interval.
 _NOMINAL_DT_S = 0.1
+
+
+def _orientation_rate_rps(
+    previous_deg: Vec3, current_deg: Vec3, dt_s: float
+) -> Vec3:
+    """Finite-difference roll/pitch/yaw rates, unwrapping yaw across ±180°."""
+
+    if dt_s <= 0.0:
+        return (0.0, 0.0, 0.0)
+    roll_delta = current_deg[0] - previous_deg[0]
+    pitch_delta = current_deg[1] - previous_deg[1]
+    yaw_delta = (current_deg[2] - previous_deg[2] + 180.0) % 360.0 - 180.0
+    return (
+        math.radians(roll_delta) / dt_s,
+        math.radians(pitch_delta) / dt_s,
+        math.radians(yaw_delta) / dt_s,
+    )
 
 
 def _decode_packets(payload: str) -> List[Dict[str, Any]]:
@@ -129,7 +147,7 @@ class JsonUdpSource:
         self.entity = entity
         self.origin = origin
         self.last_status: Dict[str, Any] = {}
-        self._last: Optional[Tuple[float, Vec3]] = None
+        self._last: Optional[Tuple[float, Vec3, Vec3]] = None
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._socket.bind((host, port))
@@ -156,7 +174,9 @@ class JsonUdpSource:
         for index, packet in enumerate(packets):
             t_s = base + index * _NOMINAL_DT_S
             position = local_sim_to_enu(*packet["state_m"])
+            orientation = packet["orientation_deg"]
             velocity: Vec3 = (0.0, 0.0, 0.0)
+            angular_velocity: Vec3 = (0.0, 0.0, 0.0)
             if self._last is not None:
                 dt = t_s - self._last[0]
                 if dt > 0.0:
@@ -165,7 +185,10 @@ class JsonUdpSource:
                         (position[1] - self._last[1][1]) / dt,
                         (position[2] - self._last[1][2]) / dt,
                     )
-            self._last = (t_s, position)
+                    angular_velocity = _orientation_rate_rps(
+                        self._last[2], orientation, dt
+                    )
+            self._last = (t_s, position, orientation)
 
             status = _status_fields(packet)
             self.last_status = status
@@ -173,8 +196,9 @@ class JsonUdpSource:
                 key=self.entity.key,
                 t_s=t_s,
                 position_enu_m=position,
-                orientation_deg=packet["orientation_deg"],
+                orientation_deg=orientation,
                 velocity_enu_mps=velocity,
+                angular_velocity_rps=angular_velocity,
                 entity_type=self.entity.entity_type,
                 force_id=self.entity.force_id,
                 marking=self.entity.resolved_marking(),

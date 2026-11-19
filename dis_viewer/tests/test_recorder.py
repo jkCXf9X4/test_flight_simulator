@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from dis_viewer.model import EntityKey, EntityState, EntityType
 from dis_viewer.recorder import JsonlRecorder, JsonlSource
 
@@ -13,6 +15,7 @@ def _full_state(key: EntityKey, t_s: float) -> EntityState:
         position_enu_m=(123.5, -456.25, 789.125),
         orientation_deg=(1.5, -2.5, 359.75),
         velocity_enu_mps=(10.0, -20.0, 0.5),
+        angular_velocity_rps=(0.01, -0.02, 0.03),
         entity_type=EntityType(
             kind=1,
             domain=2,
@@ -57,3 +60,18 @@ def test_two_states_replay_in_file_order(tmp_path):
     source = JsonlSource(path)
     assert source.receive() == replayed
     assert source.receive() == []
+
+
+def test_old_record_without_angular_velocity_loads_zeros(tmp_path):
+    state = _full_state(EntityKey(1, 1, 1), 2.0)
+    path = tmp_path / "legacy.jsonl"
+    with JsonlRecorder(path) as recorder:
+        recorder.write([state])
+
+    legacy = json.loads(path.read_text(encoding="utf-8"))
+    legacy.pop("angular_velocity_rps")
+    path.write_text(json.dumps(legacy) + "\n", encoding="utf-8")
+
+    replayed = JsonlSource(path).receive()
+    assert replayed[0].angular_velocity_rps == (0.0, 0.0, 0.0)
+    assert replayed[0] == state.copy_with(angular_velocity_rps=(0.0, 0.0, 0.0))

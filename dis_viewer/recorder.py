@@ -29,6 +29,9 @@ def _state_to_dict(state: EntityState) -> Dict[str, Any]:
         "position_enu_m": [float(value) for value in state.position_enu_m],
         "orientation_deg": [float(value) for value in state.orientation_deg],
         "velocity_enu_mps": [float(value) for value in state.velocity_enu_mps],
+        "angular_velocity_rps": [
+            float(value) for value in state.angular_velocity_rps
+        ],
         "entity_type": {
             "kind": int(entity_type.kind),
             "domain": int(entity_type.domain),
@@ -55,6 +58,10 @@ def _state_from_dict(data: Dict[str, Any]) -> EntityState:
         position_enu_m=tuple(float(value) for value in data["position_enu_m"]),  # type: ignore[arg-type]
         orientation_deg=tuple(float(value) for value in data["orientation_deg"]),  # type: ignore[arg-type]
         velocity_enu_mps=tuple(float(value) for value in data["velocity_enu_mps"]),  # type: ignore[arg-type]
+        angular_velocity_rps=tuple(  # type: ignore[arg-type]
+            float(value)
+            for value in data.get("angular_velocity_rps", (0.0, 0.0, 0.0))
+        ),
         entity_type=EntityType(
             kind=int(data["entity_type"]["kind"]),
             domain=int(data["entity_type"]["domain"]),
@@ -108,6 +115,10 @@ class JsonlSource:
         self._index = 0
         self._started_at: Optional[float] = None
         self._first_t: Optional[float] = None
+
+    @property
+    def exhausted(self) -> bool:
+        return self._index >= len(self._records)
 
     def _next_until(self, t_s: float) -> List[EntityState]:
         batch: List[EntityState] = []

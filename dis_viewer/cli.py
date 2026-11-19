@@ -52,6 +52,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--entity-application", type=int, default=1)
     parser.add_argument("--entity-id", type=int, default=1)
     parser.add_argument("--exercise-id", type=int, default=1)
+    parser.add_argument(
+        "--dr-algorithm",
+        type=int,
+        default=None,
+        help="DIS dead-reckoning algorithm (default 4, RVW; use 3 for RPW)",
+    )
     parser.add_argument("--rrd", type=Path, default=None, help="write a .rrd recording")
     parser.add_argument("--spawn", action="store_true", help="spawn the live Rerun viewer")
     parser.add_argument("--record", type=Path, default=None, help="also write a JSONL recording")
@@ -160,12 +166,17 @@ def resolve_exercise(args: argparse.Namespace) -> ExerciseConfig:
             publish_hz=config.publish_hz,
             heartbeat_s=config.heartbeat_s,
             stale_after_s=config.stale_after_s,
-            dr_algorithm=config.dr_algorithm,
+            dr_algorithm=(
+                config.dr_algorithm
+                if args.dr_algorithm is None
+                else args.dr_algorithm
+            ),
         )
     return ExerciseConfig(
         exercise_id=args.exercise_id,
         origin=resolve_origin(args),
         entities=(_entity_from_args(args),),
+        dr_algorithm=4 if args.dr_algorithm is None else args.dr_algorithm,
     )
 
 
@@ -210,6 +221,10 @@ class _Source:
 
     def receive(self, timeout: float) -> List[EntityState]:
         return self._impl.receive(timeout)
+
+    @property
+    def exhausted(self) -> bool:
+        return bool(getattr(self._impl, "exhausted", False))
 
     def close(self) -> None:
         close_impl = getattr(self._impl, "close", None)
@@ -287,6 +302,8 @@ def _loop(
                 sink.publish(states)
                 if recorder is not None:
                     recorder.write(states)
+            elif source.exhausted:
+                break
             iterations += 1
     except KeyboardInterrupt:
         pass

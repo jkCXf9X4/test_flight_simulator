@@ -7,6 +7,7 @@ import struct
 import time
 from pathlib import Path
 
+import pytest
 from opendis.PduFactory import createPdu
 
 from dis_viewer.config import Origin
@@ -124,6 +125,26 @@ def test_body_frame_velocity_round_trips_and_is_not_ecef():
 
     decoded = decode_datagram(encoded, ORIGIN)[0]
     assert close_vec(decoded.velocity_enu_mps, state.velocity_enu_mps, 1e-3)
+
+
+@pytest.mark.parametrize("algorithm", [3, 4])
+def test_angular_velocity_round_trips_for_rotating_algorithms(algorithm):
+    rates = (0.1, -0.2, 0.3)
+    state = make_state(angular_velocity_rps=rates)
+
+    encoded = encode_entity_state(
+        state, ORIGIN, 1, dr_algorithm=algorithm, timestamp=1
+    )
+    pdu = createPdu(encoded)
+    wire = pdu.deadReckoningParameters.entityAngularVelocity
+    assert close_vec((wire.x, wire.y, wire.z), rates, 1e-6)
+    acceleration = pdu.deadReckoningParameters.entityLinearAcceleration
+    assert close_vec(
+        (acceleration.x, acceleration.y, acceleration.z), (0.0, 0.0, 0.0), 0.0
+    )
+
+    decoded = decode_datagram(encoded, ORIGIN)[0]
+    assert close_vec(decoded.angular_velocity_rps, rates, 1e-6)
 
 
 def test_concatenated_pdus_decode_in_order():

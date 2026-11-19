@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import socket
 import time
 
@@ -86,6 +87,14 @@ def test_two_concatenated_packets_map_to_enu_with_finite_difference():
         assert states[1].velocity_enu_mps == pytest.approx(
             (200.0 / dt, 100.0 / dt, 0.0)
         )
+        assert states[0].angular_velocity_rps == pytest.approx((0.0, 0.0, 0.0))
+        assert states[1].angular_velocity_rps == pytest.approx(
+            (
+                math.radians(4.5) / dt,
+                math.radians(-2.0) / dt,
+                math.radians(90.0) / dt,
+            )
+        )
         assert states[1].key == entity.key
         assert states[1].entity_type == entity.entity_type
         assert states[1].force_id == 2
@@ -95,6 +104,28 @@ def test_two_concatenated_packets_map_to_enu_with_finite_difference():
         assert source.last_status["waypoint_index"] == 2
         assert source.last_status["complete"] is False
         assert states[1].status["airspeed_mps"] == pytest.approx(61.0)
+    finally:
+        sender.close()
+        source.close()
+
+
+def test_yaw_rate_wraps_across_180_degrees():
+    entity = EntityConfig(key=EntityKey())
+    source = JsonUdpSource("127.0.0.1", 0, entity, Origin())
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        first = _packet(x_km=0.0, y_km=0.0, z_km=1.0, yaw_deg=179.0)
+        second = _packet(x_km=0.0, y_km=0.0, z_km=1.0, yaw_deg=-179.0)
+        payload = json.dumps(first) + json.dumps(second)
+        sender.sendto(payload.encode("utf-8"), ("127.0.0.1", source.port))
+
+        states = source.receive(timeout=1.0)
+
+        assert len(states) == 2
+        dt = states[1].t_s - states[0].t_s
+        assert states[1].angular_velocity_rps[2] == pytest.approx(
+            math.radians(2.0) / dt
+        )
     finally:
         sender.close()
         source.close()

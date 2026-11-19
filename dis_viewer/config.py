@@ -68,7 +68,7 @@ class ExerciseConfig:
     publish_hz: float = 10.0
     heartbeat_s: float = 5.0
     stale_after_s: float = 5.0
-    dr_algorithm: int = 3
+    dr_algorithm: int = 4
 
     def assert_unique_entities(self) -> None:
         keys = [entity.key for entity in self.entities]
@@ -101,7 +101,7 @@ def _exercise_from_dict(data: Dict[str, Any]) -> ExerciseConfig:
         publish_hz=float(data.get("publish_hz", 10.0)),
         heartbeat_s=float(data.get("heartbeat_s", 5.0)),
         stale_after_s=float(data.get("stale_after_s", 5.0)),
-        dr_algorithm=int(data.get("dr_algorithm", 3)),
+        dr_algorithm=int(data.get("dr_algorithm", 4)),
     )
     config.assert_unique_entities()
     return config

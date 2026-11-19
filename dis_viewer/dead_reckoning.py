@@ -1,13 +1,10 @@
 """Dead reckoning between sparse DIS entity updates (phase 1).
 
-The phase-1 :class:`~dis_viewer.model.EntityState` carries position, velocity
-and orientation but no angular velocity or linear acceleration field.  For
-algorithms 3, 4, 7 and 8 orientation is therefore treated as **static** in
-phase 1, and algorithm 8 assumes zero linear acceleration.
-
-The implementation is written to honour optional ``angular_velocity_rps`` and
-``acceleration_enu_mps2`` attributes if a future model adds them, without
-changing this module's API.
+:class:`~dis_viewer.model.EntityState` carries position, velocity, orientation
+and angular velocity.  Algorithms 3, 4, 7 and 8 integrate orientation from
+``angular_velocity_rps``; algorithm 2 remains position-only and algorithm 1 is
+static.  Algorithm 8 honours an optional ``acceleration_enu_mps2`` attribute if
+present and otherwise assumes zero linear acceleration.
 """
 
 from __future__ import annotations
@@ -75,7 +72,7 @@ def extrapolate(state: EntityState, now_s: float, algorithm: int = 3) -> EntityS
 
     changes = {"t_s": now, "position_enu_m": position}
     if algorithm in ROTATING:
-        rates = _optional(state, "angular_velocity_rps")
+        rates = _vec3(state.angular_velocity_rps)
         if any(rates):
             changes["orientation_deg"] = _integrate_orientation(
                 _vec3(state.orientation_deg), rates, dt_s

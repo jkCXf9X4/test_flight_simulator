@@ -56,8 +56,13 @@ Seven fields, all configurable:
 - One Entity State PDU per aircraft per telemetry packet, 10 Hz.
 - No separate heartbeat PDU. An entity with no update for 5 s is marked stale and
   keeps its last pose.
-- Dead-reckoning algorithm 3 (RPW) in phase 1. Algorithm 4 (RVW) once angular
-  velocity is carried in the model; RVW needs velocity, not linear acceleration.
+- Dead-reckoning algorithm 4 (RVW) is the default; algorithm 3 (RPW) remains
+  selectable with `--dr-algorithm 3`. RVW needs velocity, not linear
+  acceleration.
+- Angular velocity is carried through the pipeline: the model stores
+  roll/pitch/yaw Euler rates in radians per second, the DIS wire carries them
+  for rotating algorithms 3, 4, 7 and 8, and telemetry sources derive them by
+  finite difference between consecutive packets.
 
 ## 6. Module API
 
@@ -70,8 +75,10 @@ Python 3.11, package `dis_viewer`, no imports of `rclpy` anywhere.
 - `EntityType(kind, domain, country, category, subcategory, specific, extra)`,
   frozen; `as_tuple()` returns the seven fields in that order.
 - `EntityState(key, t_s, position_enu_m, orientation_deg, velocity_enu_mps,
-  entity_type, force_id, marking, stale)`; mutable dataclass, defaults for all
-  except `key` and `t_s`; `orientation_deg` is `(roll, pitch, yaw)` degrees;
+  angular_velocity_rps, entity_type, force_id, marking, stale)`; mutable
+  dataclass, defaults for all except `key` and `t_s`; `orientation_deg` is
+  `(roll, pitch, yaw)` degrees; `angular_velocity_rps` is the rate of those
+  Euler angles in radians per second (local-frame approximation);
   `copy_with(**changes)` uses `dataclasses.replace`.
 
 `config.py`
@@ -81,7 +88,7 @@ Python 3.11, package `dis_viewer`, no imports of `rclpy` anywhere.
 - `TransportConfig(mode="unicast", host="127.0.0.1", port=3000, ttl=1,
   interface=None)`, frozen; `mode` is `"unicast"` or `"multicast"`.
 - `ExerciseConfig(exercise_id=1, origin=Origin(), entities=(), transport=TransportConfig(),
-  publish_hz=10.0, heartbeat_s=5.0, stale_after_s=5.0, dr_algorithm=3)`.
+  publish_hz=10.0, heartbeat_s=5.0, stale_after_s=5.0, dr_algorithm=4)`.
 - `load_exercise(path)` reads the JSON form of the above; `save_exercise(path, cfg)`.
 
 `geo.py`
@@ -141,8 +148,8 @@ Python 3.11, package `dis_viewer`, no imports of `rclpy` anywhere.
   with `--host`, `--port`, `--telemetry`, `--transport {unicast,multicast}`,
   `--group`, `--interface`, `--ttl`, `--scenario`, `--config`, `--origin-lat`,
   `--origin-lon`, `--origin-alt`, `--entity-site`, `--entity-application`,
-  `--entity-id`, `--exercise-id`, `--rrd`, `--record`, `--spawn`, `--path`,
-  `--realtime`, `--duration`, `--count`, `--app-id`.
+  `--entity-id`, `--exercise-id`, `--dr-algorithm`, `--rrd`, `--record`,
+  `--spawn`, `--path`, `--realtime`, `--duration`, `--count`, `--app-id`.
 - `--source json-udp` defaults to `127.0.0.1:5501`; `--sink dis` defaults to
   unicast `127.0.0.1:3000`.
 - `--telemetry SPEC` is repeatable and selects one UDP telemetry stream per
