@@ -77,6 +77,7 @@ Current behavior:
 
 Containerized viewer behavior:
 
+- `./scripts/check_environment.sh --source-build` resolves the build interpreter (`$PYTHON`, workspace venv, airplane venv, PATH) and checks `omc`, `cmake` and a C++ compiler
 - `./scripts/check_environment.sh --live-container` validates Podman, the built Rerun image (`test-flight-simulator-rerun`), and the X11 requirements before launch
 - `./scripts/build_airplane.py [scenario-json]` refreshes the local SSP bundle used by both batch and live runs
 - `./scripts/build_rerun_container.sh` builds the reusable Podman Rerun image from `Containerfile.rerun`
@@ -140,6 +141,25 @@ $PY scripts/generate_instance_manifest.py           # rewrite the two-instance m
 $PY scripts/generate_instance_manifest.py --check   # fail if it is stale
 $PY -m pysos_sysml manifest sos/aircraft_federation.sysml -o manifests/aircraft_federation.manifest.json --check  # fail if it is stale
 ```
+
+The system-of-systems model has two planes: the entity plane
+(`sos/aircraft_federation.sysml`, lowered to the manifest) and the system plane
+(`sos/federation_system.sysml`, lowered by `scripts/sos_model.py`). The system
+plane owns the shared frame and origin, the timing contract, the host-side
+participants (orchestrator/recorder on RPR 5505, viewer, pilot), the flows and
+the run artifacts. `scripts/sos_model.py` must print `ok:` before a federation
+run, and `scripts/sos_model.py --artifacts` after a build to prove the fresh
+SSPs still match the modelled aircraft; see `docs/sos_model.md`.
+
+Per-instance run parameters live in the manifest `command` argv because the
+`pysos_sysml` subset cannot type them: `--realtime`, `--stop-time`, the
+placement offsets, `--waypoint-frame federation`, and the federation
+`--reference-latitude-deg/--reference-longitude-deg/--reference-altitude-m`.
+The frame flag rebases each scenario's waypoints into the federation frame, so
+four scenarios authored around four different geodetic origins still publish one
+consistent frame; the reference flags put that same origin in every telemetry
+packet. The aircraft composition itself is imported from
+`3rd_party/airplane/architecture/aircraft.sysml`, not restated.
 
 `scripts/run_instances.py` translates its CLI into a manifest and hands the
 validated spec to `pysos_coordinate.Federation`; the project keeps no process

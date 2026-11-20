@@ -4,7 +4,7 @@ Test workspace for the flight-sim interactive simulation stack. Runs the `ssp_ai
 
 Key scripts:
 - `scripts/check_environment.sh` — validate host prerequisites (`--source-build`, `--live-container`, `--container-build`)
-- `scripts/build_airplane.py` — build the airplane SSP/FMUs and refresh the local `build/ssp` bundle
+- `scripts/build_airplane.py` — build the airplane SSP/FMUs and refresh the local `build/ssp` bundle (resolves `$PYTHON` / workspace venv / airplane venv; run `check_environment.sh --source-build` first)
 - `scripts/build_rerun_container.sh` — build the Podman Rerun viewer image (`Containerfile.rerun`)
 - `scripts/run_rerun_stack.sh` — run the realtime sim plus the Rerun viewer; host venv by default, `RERUN_CONTAINER=1` for the Podman image
 - `scripts/container_rerun_smoke.sh` — headless Rerun recording smoke test (no X11, no Podman)
@@ -15,7 +15,9 @@ Key scripts:
 - `scripts/generate_instance_manifest.py` — generate/check `manifests/two_instances.manifest.json`
 - `scripts/run_instance_process.py` — manifest command: prepare one bundle (scenario and ports from its environment), then exec its simulation
 - `scripts/run_e2e_rpr.py` — run the federation, adapt telemetry to RPR one-way, record truth/CSV/Rerun, summarize separation
-- `sos/aircraft_federation.sysml` — source of truth for the four-aircraft system of systems; check the lowered manifest with `pysos-sysml manifest sos/aircraft_federation.sysml -o manifests/aircraft_federation.manifest.json --check`
+- `sos/aircraft_federation.sysml` — entity plane and source of truth for the four aircraft; check the lowered manifest with `pysos-sysml manifest sos/aircraft_federation.sysml -o manifests/aircraft_federation.manifest.json --check`
+- `sos/federation_system.sysml` — system plane: frame, timing, host processes, flows and artifacts (SysML v2, lowered by `pycps_sysml2`)
+- `scripts/sos_model.py` — lower the system plane and check it against the manifest; must print `ok:` before a federation run (`--artifacts` also verifies the built aircraft SSPs)
 - `scripts/render_showcase_movie.py` — render a showcase movie from a recorded capture (its RViz capture path has been retired)
 
 The aircraft model, SysML architecture, and SSP/FMU build pipeline live in `3rd_party/airplane` (git submodule, handled separately).

@@ -4,8 +4,13 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AIRPLANE_ROOT="$REPO_ROOT/3rd_party/airplane"
+WORKSPACE_VENV_PYTHON="$REPO_ROOT/../venv/bin/python3"
+AIRPLANE_VENV_PYTHON="$AIRPLANE_ROOT/venv/bin/python3"
 IMAGE_NAME="${IMAGE_NAME:-test-flight-simulator-rerun:latest}"
 MODE="${1:---live-container}"
+
+#: Imported by the airplane build CLIs.
+BUILD_IMPORTS="pyssp_sysml2, pyssp_standard, pyssp_workflow, pycps_sysml2"
 
 fail() {
   echo "Environment check failed: $*" >&2
@@ -34,17 +39,46 @@ check_x11() {
   [[ -f "$xauth_path" ]] || fail "Xauthority file not found at $xauth_path"
 }
 
-check_airplane_python() {
-  local py
-  if [[ -x "$AIRPLANE_ROOT/venv/bin/python3" ]]; then
-    py="$AIRPLANE_ROOT/venv/bin/python3"
-  elif command -v python3 >/dev/null 2>&1; then
-    py="$(command -v python3)"
-  else
-    fail "python3 is not available on PATH"
+# Mirrors scripts/build_airplane.py: $PYTHON, workspace venv, airplane venv, PATH.
+resolve_build_python() {
+  local candidates=()
+  [[ -n "${PYTHON:-}" ]] && candidates+=("$PYTHON")
+  candidates+=("$WORKSPACE_VENV_PYTHON" "$AIRPLANE_VENV_PYTHON")
+  if command -v python3 >/dev/null 2>&1; then
+    candidates+=("$(command -v python3)")
   fi
-  "$py" -c "import pyssp_sysml2" >/dev/null 2>&1 \
-    || fail "python3 cannot import pyssp_sysml2 (airplane build dependency). Activate a venv with the airplane build deps installed (see AGENTS.md)."
+
+  local py
+  for py in "${candidates[@]}"; do
+    [[ -f "$py" ]] || continue
+    "$py" -c "import ${BUILD_IMPORTS}" >/dev/null 2>&1 || continue
+    if [[ -x "$(dirname "$py")/pyfmi" ]] || command -v pyfmi >/dev/null 2>&1; then
+      printf '%s\n' "$py"
+      return 0
+    fi
+  done
+  return 1
+}
+
+check_source_build() {
+  local py
+  py="$(resolve_build_python)" || fail "no interpreter imports ${BUILD_IMPORTS} and has pyfmi. Set PYTHON to one that does (workspace venv: $WORKSPACE_VENV_PYTHON)."
+  echo "build python: $py"
+
+  if [[ -n "${OMC:-}" ]]; then
+    [[ -x "$OMC" ]] || fail "OMC=$OMC is not executable"
+  else
+    command -v omc >/dev/null 2>&1 || fail "omc is not installed or not on PATH (OpenModelica 1.26.x); set OMC to its full path"
+  fi
+  echo "omc: $(command -v "${OMC:-omc}")"
+
+  command -v cmake >/dev/null 2>&1 || fail "cmake is not installed or not on PATH (>= 3.16)"
+  echo "cmake: $(command -v cmake)"
+
+  if ! command -v c++ >/dev/null 2>&1 && ! command -v g++ >/dev/null 2>&1; then
+    fail "no C++ compiler (c++ or g++) on PATH; the UdpBridge FMU is built natively"
+  fi
+  echo "c++: $(command -v c++ || command -v g++)"
 }
 
 case "$MODE" in
@@ -54,7 +88,7 @@ case "$MODE" in
     check_x11
     ;;
   --source-build)
-    check_airplane_python
+    check_source_build
     ;;
   --container-build)
     check_podman

@@ -54,6 +54,10 @@ NS_SSD = "http://ssp-standard.org/SSP1/SystemStructureDescription"
 
 TELEMETRY_PARAM = "udp_bridge.telemetry_port"
 CONTROL_PARAM = "udp_bridge.control_port"
+REFERENCE_LATITUDE_PARAM = "udp_bridge.reference_latitude_deg"
+REFERENCE_LONGITUDE_PARAM = "udp_bridge.reference_longitude_deg"
+REFERENCE_ALTITUDE_PARAM = "udp_bridge.reference_altitude_m"
+USE_BRIDGE_INPUT_PARAM = "useBridgeInput"
 INIT_X_PARAM = "initX_km"
 INIT_Y_PARAM = "initY_km"
 WAYPOINT_COUNT_PARAM = "waypointCount"
@@ -83,8 +87,21 @@ def instance_defaults(index: int) -> dict[str, float | int]:
     }
 
 
-def _scenario_parameter_set(scenario: str) -> dict[str, tuple[str, str]]:
-    """Convert a scenario JSON through the airplane library into SSV values."""
+def _scenario_parameter_set(
+    scenario: str,
+    *,
+    offset_north_km: float = 0.0,
+    offset_east_km: float = 0.0,
+    waypoint_frame: str = "local",
+) -> dict[str, tuple[str, str]]:
+    """Convert a scenario JSON through the airplane library into SSV values.
+
+    ``waypoint_frame="federation"`` translates the waypoints out of the
+    scenario's own local frame (``points[0]``) into the federation frame, using
+    the same offset that is applied to the initial position. Without it each
+    instance would fly its mission around its own geodetic origin while the
+    recorder treats every entity as sharing one ENU frame.
+    """
 
     path = SCENARIO_DIR / f"{scenario}.json"
     if not path.is_file():
@@ -133,6 +150,12 @@ def _scenario_parameter_set(scenario: str) -> dict[str, tuple[str, str]]:
     missing = sorted(requested - set(values))
     if missing:
         raise SystemExit(f"{path}: conversion did not produce {missing}")
+    if waypoint_frame == "federation":
+        for waypoint_index in range(1, WAYPOINT_ARRAY_SIZE + 1):
+            for axis, offset in (("waypointX_km", offset_north_km), ("waypointY_km", offset_east_km)):
+                key = f"{axis}[{waypoint_index}]"
+                tag, raw = values[key]
+                values[key] = (tag, f"{float(raw) + offset:.6f}")
     return values
 
 
@@ -298,6 +321,11 @@ def prepare_instance(
     stop_time: float | None = None,
     scenario: str | None = None,
     realtime: bool = False,
+    waypoint_frame: str = "local",
+    bridge_input: bool = False,
+    reference_latitude_deg: float | None = None,
+    reference_longitude_deg: float | None = None,
+    reference_altitude_m: float | None = None,
 ) -> dict[str, str]:
     """Write the per-instance SSP and config; return their paths and settings."""
 
@@ -307,6 +335,8 @@ def prepare_instance(
     north = float(offset_north_km if offset_north_km is not None else defaults["offset_north_km"])
     east = float(offset_east_km if offset_east_km is not None else defaults["offset_east_km"])
     scenario_name = scenario or DEFAULT_SCENARIO
+    if waypoint_frame not in ("local", "federation"):
+        raise SystemExit(f"waypoint frame must be 'local' or 'federation', got {waypoint_frame!r}")
     for label, port in (("--telemetry-port", telemetry), ("--control-port", control)):
         if not 1 <= port <= 65535:
             raise SystemExit(f"{label} out of range: {port}")
@@ -347,14 +377,35 @@ def prepare_instance(
         CONTROL_PARAM: ("Integer", str(control)),
         INIT_X_PARAM: ("Real", f"{base_north + north:.6f}"),
         INIT_Y_PARAM: ("Real", f"{base_east + east:.6f}"),
+        USE_BRIDGE_INPUT_PARAM: ("Boolean", "true" if bridge_input else "false"),
     }
-    updates.update(_scenario_parameter_set(scenario_name))
+    # The federation frame origin is the wire origin of every entity: the
+    # payload must name it, otherwise a consumer cannot place the record.
+    for name, value in (
+        (REFERENCE_LATITUDE_PARAM, reference_latitude_deg),
+        (REFERENCE_LONGITUDE_PARAM, reference_longitude_deg),
+        (REFERENCE_ALTITUDE_PARAM, reference_altitude_m),
+    ):
+        if value is not None:
+            updates[name] = ("Real", f"{float(value):.9f}")
+    updates.update(
+        _scenario_parameter_set(
+            scenario_name,
+            offset_north_km=north,
+            offset_east_km=east,
+            waypoint_frame=waypoint_frame,
+        )
+    )
     mapping = {
         TELEMETRY_PARAM: TELEMETRY_PARAM,
         CONTROL_PARAM: CONTROL_PARAM,
         INIT_X_PARAM: f"environment.{INIT_X_PARAM}",
         INIT_Y_PARAM: f"environment.{INIT_Y_PARAM}",
         WAYPOINT_COUNT_PARAM: f"autopilot_module.{WAYPOINT_COUNT_PARAM}",
+        USE_BRIDGE_INPUT_PARAM: f"control_interface.{USE_BRIDGE_INPUT_PARAM}",
+        REFERENCE_LATITUDE_PARAM: REFERENCE_LATITUDE_PARAM,
+        REFERENCE_LONGITUDE_PARAM: REFERENCE_LONGITUDE_PARAM,
+        REFERENCE_ALTITUDE_PARAM: REFERENCE_ALTITUDE_PARAM,
     }
 
     _validate_ssd(contents[SSD_MEMBER], mapping)
@@ -394,6 +445,8 @@ def prepare_instance(
         "stop_time": f"{resolved_stop_time}",
         "scenario": scenario_name,
         "realtime": str(realtime).lower(),
+        "waypoint_frame": waypoint_frame,
+        "bridge_input": str(bridge_input).lower(),
     }
 
 
@@ -412,6 +465,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--stop-time", type=float, default=None, help="Stop time in seconds.")
     parser.add_argument("--scenario", default=None, help="Scenario JSON stem (default: test_scenario).")
     parser.add_argument("--realtime", action="store_true", help="Pace the instance against the wall clock.")
+    parser.add_argument(
+        "--waypoint-frame",
+        choices=("local", "federation"),
+        default="local",
+        help="Keep scenario waypoints in their own local frame, or translate them into the federation frame.",
+    )
+    parser.add_argument(
+        "--bridge-input",
+        action="store_true",
+        help="Let UDP pilot commands steer the aircraft (ControlParameters.useBridgeInput).",
+    )
+    parser.add_argument("--reference-latitude-deg", type=float, default=None, help="Wire origin latitude.")
+    parser.add_argument("--reference-longitude-deg", type=float, default=None, help="Wire origin longitude.")
+    parser.add_argument("--reference-altitude-m", type=float, default=None, help="Wire origin altitude.")
     return parser.parse_args(argv)
 
 
@@ -429,6 +496,11 @@ def main(argv: list[str] | None = None) -> int:
         csv_path=args.csv,
         log_path=args.log,
         stop_time=args.stop_time,
+        waypoint_frame=args.waypoint_frame,
+        bridge_input=args.bridge_input,
+        reference_latitude_deg=args.reference_latitude_deg,
+        reference_longitude_deg=args.reference_longitude_deg,
+        reference_altitude_m=args.reference_altitude_m,
         scenario=args.scenario,
         realtime=args.realtime,
     )

@@ -11,7 +11,7 @@ package AircraftFederation {
       attribute scenario : String = "high_altitude_intercept";
       attribute telemetryPort : Integer = 5510;
       attribute controlPort : Integer = 5511;
-      attribute command : String = "python scripts/run_instance_process.py";
+      attribute command : String = "python scripts/run_instance_process.py --realtime --stop-time 120 --offset-north-km 0 --offset-east-km 0 --waypoint-frame federation --reference-latitude-deg -2.957519 --reference-longitude-deg 39.232955 --reference-altitude-m 0";
       attribute cwd : String = ".";
     }
 
@@ -23,7 +23,7 @@ package AircraftFederation {
       attribute scenario : String = "deep_strike_penetration";
       attribute telemetryPort : Integer = 5512;
       attribute controlPort : Integer = 5513;
-      attribute command : String = "python scripts/run_instance_process.py";
+      attribute command : String = "python scripts/run_instance_process.py --realtime --stop-time 120 --offset-north-km 0 --offset-east-km 5 --waypoint-frame federation --reference-latitude-deg -2.957519 --reference-longitude-deg 39.232955 --reference-altitude-m 0";
       attribute cwd : String = ".";
     }
 
@@ -35,7 +35,7 @@ package AircraftFederation {
       attribute scenario : String = "cas_multi_store_support";
       attribute telemetryPort : Integer = 5514;
       attribute controlPort : Integer = 5515;
-      attribute command : String = "python scripts/run_instance_process.py";
+      attribute command : String = "python scripts/run_instance_process.py --realtime --stop-time 120 --offset-north-km 0 --offset-east-km 10 --waypoint-frame federation --reference-latitude-deg -2.957519 --reference-longitude-deg 39.232955 --reference-altitude-m 0";
       attribute cwd : String = ".";
     }
 
@@ -47,7 +47,7 @@ package AircraftFederation {
       attribute scenario : String = "test_scenario";
       attribute telemetryPort : Integer = 5516;
       attribute controlPort : Integer = 5517;
-      attribute command : String = "python scripts/run_instance_process.py";
+      attribute command : String = "python scripts/run_instance_process.py --realtime --stop-time 120 --offset-north-km 0 --offset-east-km 15 --waypoint-frame federation --reference-latitude-deg -2.957519 --reference-longitude-deg 39.232955 --reference-altitude-m 0";
       attribute cwd : String = ".";
     }
   }

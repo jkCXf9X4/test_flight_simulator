@@ -71,6 +71,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--stop-time", type=float, default=None, help="Stop time in seconds.")
     parser.add_argument("--scenario", default=None, help="Scenario JSON stem (overrides PYSOS_SCENARIO).")
     parser.add_argument("--realtime", action="store_true", help="Pace the instance against the wall clock.")
+    parser.add_argument(
+        "--waypoint-frame",
+        choices=("local", "federation"),
+        default="local",
+        help="Keep scenario waypoints in their own local frame, or translate them into the federation frame.",
+    )
+    parser.add_argument(
+        "--bridge-input",
+        action="store_true",
+        help="Let UDP pilot commands steer the aircraft (ControlParameters.useBridgeInput).",
+    )
+    parser.add_argument("--reference-latitude-deg", type=float, default=None, help="Wire origin latitude.")
+    parser.add_argument("--reference-longitude-deg", type=float, default=None, help="Wire origin longitude.")
+    parser.add_argument("--reference-altitude-m", type=float, default=None, help="Wire origin altitude.")
     return parser.parse_args(argv)
 
 
@@ -93,6 +107,11 @@ def main(argv: list[str] | None = None) -> int:
         stop_time=args.stop_time,
         scenario=args.scenario or _env_scenario() or DEFAULT_SCENARIO,
         realtime=args.realtime,
+        waypoint_frame=args.waypoint_frame,
+        bridge_input=args.bridge_input,
+        reference_latitude_deg=args.reference_latitude_deg,
+        reference_longitude_deg=args.reference_longitude_deg,
+        reference_altitude_m=args.reference_altitude_m,
     )
     print(json.dumps(summary, sort_keys=True), flush=True)
 

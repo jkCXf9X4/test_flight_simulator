@@ -3,7 +3,22 @@
     {
       "command": [
         "python",
-        "scripts/run_instance_process.py"
+        "scripts/run_instance_process.py",
+        "--realtime",
+        "--stop-time",
+        "120",
+        "--offset-north-km",
+        "0",
+        "--offset-east-km",
+        "0",
+        "--waypoint-frame",
+        "federation",
+        "--reference-latitude-deg",
+        "-2.957519",
+        "--reference-longitude-deg",
+        "39.232955",
+        "--reference-altitude-m",
+        "0"
       ],
       "control": [
         {
@@ -37,7 +52,22 @@
     {
       "command": [
         "python",
-        "scripts/run_instance_process.py"
+        "scripts/run_instance_process.py",
+        "--realtime",
+        "--stop-time",
+        "120",
+        "--offset-north-km",
+        "0",
+        "--offset-east-km",
+        "5",
+        "--waypoint-frame",
+        "federation",
+        "--reference-latitude-deg",
+        "-2.957519",
+        "--reference-longitude-deg",
+        "39.232955",
+        "--reference-altitude-m",
+        "0"
       ],
       "control": [
         {
@@ -71,7 +101,22 @@
     {
       "command": [
         "python",
-        "scripts/run_instance_process.py"
+        "scripts/run_instance_process.py",
+        "--realtime",
+        "--stop-time",
+        "120",
+        "--offset-north-km",
+        "0",
+        "--offset-east-km",
+        "10",
+        "--waypoint-frame",
+        "federation",
+        "--reference-latitude-deg",
+        "-2.957519",
+        "--reference-longitude-deg",
+        "39.232955",
+        "--reference-altitude-m",
+        "0"
       ],
       "control": [
         {
@@ -105,7 +150,22 @@
     {
       "command": [
         "python",
-        "scripts/run_instance_process.py"
+        "scripts/run_instance_process.py",
+        "--realtime",
+        "--stop-time",
+        "120",
+        "--offset-north-km",
+        "0",
+        "--offset-east-km",
+        "15",
+        "--waypoint-frame",
+        "federation",
+        "--reference-latitude-deg",
+        "-2.957519",
+        "--reference-longitude-deg",
+        "39.232955",
+        "--reference-altitude-m",
+        "0"
       ],
       "control": [
         {
