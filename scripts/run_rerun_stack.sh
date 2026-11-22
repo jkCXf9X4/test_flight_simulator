@@ -6,6 +6,10 @@
 # either on the host with the repo venv (default) or inside the Rerun Podman
 # image when RERUN_CONTAINER=1. The container uses host networking so it can
 # receive the bridge's UDP telemetry on 127.0.0.1:5501.
+#
+# RERUN_WEB=1 swaps the native viewer window for the Rerun web viewer, fed
+# over gRPC and opened in a dedicated Chrome instance that enables the
+# SwiftShader WebGL2 fallback (plain Chrome refuses WebGL2 on GPU-less hosts).
 
 set -euo pipefail
 
@@ -18,6 +22,12 @@ RECORD_PATH="${RECORD_PATH:-build/results/flight_viewer.jsonl}"
 TELEMETRY_CSV="${TELEMETRY_CSV:-$REPO_ROOT/build/results/scenario_results_realtime.csv}"
 SIM_READY_TIMEOUT="${SIM_READY_TIMEOUT:-30}"
 XAUTHORITY_PATH="${XAUTHORITY:-$HOME/.Xauthority}"
+RERUN_WEB="${RERUN_WEB:-0}"
+RERUN_WEB_PORT="${RERUN_WEB_PORT:-9090}"
+RERUN_GRPC_PORT="${RERUN_GRPC_PORT:-9876}"
+CHROME_BIN="${CHROME_BIN:-}"
+WEB_READY_TIMEOUT="${WEB_READY_TIMEOUT:-20}"
+WEB_URL="http://127.0.0.1:${RERUN_WEB_PORT}/?url=rerun%2Bhttp%3A%2F%2Flocalhost%3A${RERUN_GRPC_PORT}%2Fproxy"
 
 if [[ $# -gt 0 ]]; then
   echo "run_rerun_stack.sh does not accept arguments; use environment variables instead." >&2
@@ -43,9 +53,19 @@ fi
 
 SIM_PID=""
 VIEWER_PID=""
+WEB_PID=""
+CHROME_PID=""
 XHOST_ADDED=0
 
 cleanup() {
+  if [[ -n "$CHROME_PID" ]]; then
+    kill "$CHROME_PID" >/dev/null 2>&1 || true
+    wait "$CHROME_PID" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$WEB_PID" ]]; then
+    kill -- "-$WEB_PID" >/dev/null 2>&1 || kill "$WEB_PID" >/dev/null 2>&1 || true
+    wait "$WEB_PID" >/dev/null 2>&1 || true
+  fi
   if [[ -n "$VIEWER_PID" ]]; then
     kill "$VIEWER_PID" >/dev/null 2>&1 || true
     wait "$VIEWER_PID" >/dev/null 2>&1 || true
@@ -88,12 +108,65 @@ wait_for_telemetry() {
   return 1
 }
 
+# RERUN_WEB support: find a browser that can run the web viewer.
+
+find_chrome() {
+  local candidate
+  if [[ -n "$CHROME_BIN" ]]; then
+    printf '%s\n' "$CHROME_BIN"
+    return 0
+  fi
+  for candidate in google-chrome google-chrome-stable chromium chromium-browser; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      command -v "$candidate"
+      return 0
+    fi
+  done
+  if [[ -x /opt/google/chrome/chrome ]]; then
+    printf '%s\n' /opt/google/chrome/chrome
+    return 0
+  fi
+  return 1
+}
+
+wait_for_web() {
+  local start_epoch deadline
+  start_epoch="$(date +%s)"
+  deadline=$((start_epoch + WEB_READY_TIMEOUT))
+  while (( $(date +%s) <= deadline )); do
+    if ! kill -0 "$WEB_PID" >/dev/null 2>&1; then
+      echo "Rerun web server exited early (see build/results/rerun_web.log)." >&2
+      return 1
+    fi
+    if (exec 3<>"/dev/tcp/127.0.0.1/$RERUN_WEB_PORT") 2>/dev/null; then
+      exec 3>&- 3<&-
+      return 0
+    fi
+    sleep 0.25
+  done
+  echo "Timed out after ${WEB_READY_TIMEOUT}s waiting for http://127.0.0.1:$RERUN_WEB_PORT." >&2
+  return 1
+}
+
 mkdir -p "$REPO_ROOT/build/results"
+
+# Resolve the interpreter once: the scenario runner re-execs itself with
+# sys.executable, and the system python lacks the simulation dependencies.
+PYTHON="${PYTHON:-}"
+if [[ -z "$PYTHON" ]]; then
+  if [[ -x "$REPO_ROOT/../venv/bin/python" ]]; then
+    PYTHON="$REPO_ROOT/../venv/bin/python"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON="$(command -v python3)"
+  else
+    fail "No Python interpreter found. Set PYTHON or activate the repo venv."
+  fi
+fi
 
 echo "Starting simulation (realtime) ..."
 (
   cd "$REPO_ROOT"
-  exec setsid ./scripts/run_airplane_scenario.py --realtime
+  exec setsid "$PYTHON" ./scripts/run_airplane_scenario.py --realtime
 ) &
 SIM_PID=$!
 
@@ -103,10 +176,16 @@ wait_for_telemetry
 VIEWER_ARGS=(
   --source json-udp
   --sink rerun
-  --spawn
   --scenario "$SCENARIO_PATH"
   --record "$RECORD_PATH"
 )
+
+if [[ "$RERUN_WEB" == "1" ]]; then
+  [[ "$RERUN_CONTAINER" == "1" ]] && fail "RERUN_WEB=1 cannot be combined with RERUN_CONTAINER=1."
+  VIEWER_ARGS+=(--connect-grpc)
+else
+  VIEWER_ARGS+=(--spawn)
+fi
 
 echo "Starting Rerun viewer ..."
 if [[ "$RERUN_CONTAINER" == "1" ]]; then
@@ -139,18 +218,41 @@ if [[ "$RERUN_CONTAINER" == "1" ]]; then
   VIEWER_PID=$!
   wait "$VIEWER_PID"
 else
-  PYTHON="${PYTHON:-}"
-  if [[ -z "$PYTHON" ]]; then
-    if [[ -x "$REPO_ROOT/../venv/bin/python" ]]; then
-      PYTHON="$REPO_ROOT/../venv/bin/python"
-    elif command -v python3 >/dev/null 2>&1; then
-      PYTHON="$(command -v python3)"
-    else
-      fail "No Python interpreter found. Set PYTHON or activate the repo venv."
-    fi
-  fi
   if ! "$PYTHON" -c "import rerun" >/dev/null 2>&1; then
     fail "$PYTHON cannot import rerun. Install flight_viewer/requirements.txt or set PYTHON."
+  fi
+
+  if [[ "$RERUN_WEB" == "1" ]]; then
+    RERUN_BIN="$(dirname "$PYTHON")/rerun"
+    if [[ ! -x "$RERUN_BIN" ]]; then
+      RERUN_BIN="$(command -v rerun || true)"
+    fi
+    [[ -n "$RERUN_BIN" ]] || fail "RERUN_WEB=1 requires the rerun CLI (venv/bin/rerun)."
+    CHROME="$(find_chrome)" || fail "RERUN_WEB=1 requires Chrome or Chromium; set CHROME_BIN."
+    [[ -n "${DISPLAY:-}" ]] || fail "RERUN_WEB=1 requires DISPLAY to be set."
+
+    echo "Starting Rerun web server on :$RERUN_WEB_PORT (gRPC :$RERUN_GRPC_PORT) ..."
+    (
+      cd "$REPO_ROOT"
+      exec setsid "$RERUN_BIN" --serve-web \
+        --web-viewer-port "$RERUN_WEB_PORT" \
+        --port "$RERUN_GRPC_PORT" \
+        >"$REPO_ROOT/build/results/rerun_web.log" 2>&1
+    ) &
+    WEB_PID=$!
+    wait_for_web
+
+    # SwiftShader gives WebGL2 on hosts without a usable GPU; without these
+    # flags the web viewer's canvas fails to get a context and stays blank.
+    echo "Opening web viewer in Chrome ..."
+    "$CHROME" \
+      --user-data-dir="$REPO_ROOT/build/chrome-rerun" \
+      --no-first-run --no-default-browser-check \
+      --ignore-gpu-blocklist --enable-unsafe-swiftshader \
+      --use-gl=angle --use-angle=swiftshader \
+      --window-size=1700,950 --window-position=120,80 \
+      --app="$WEB_URL" >/dev/null 2>&1 &
+    CHROME_PID=$!
   fi
 
   (

@@ -52,13 +52,17 @@ The supported live visualization is ROS-free. `ssp4sim` stays on the host, the n
 # View in the Podman image instead
 ./scripts/build_rerun_container.sh
 RERUN_CONTAINER=1 ./scripts/run_rerun_stack.sh
+
+# Web viewer in Chrome (SwiftShader WebGL2, works without a GPU)
+RERUN_WEB=1 ./scripts/run_rerun_stack.sh
 ```
 
-- `run_rerun_stack.sh` starts `./scripts/run_airplane_scenario.py --realtime`, waits for `build/results/scenario_results_realtime.csv` to advance instead of sleeping, then runs `python -m flight_viewer --source json-udp --sink rerun --spawn --scenario 3rd_party/airplane/resources/scenarios/test_scenario.json --record build/results/flight_viewer.jsonl`.
+- `run_rerun_stack.sh` starts `./scripts/run_airplane_scenario.py --realtime`, waits for `build/results/scenario_results_realtime.csv` to advance instead of sleeping, then runs `python -m flight_viewer --source json-udp --sink rerun --spawn` (`--connect-grpc` with `RERUN_WEB=1`) `--scenario 3rd_party/airplane/resources/scenarios/test_scenario.json --record build/results/flight_viewer.jsonl`.
 - Host execution uses the repo venv. `RERUN_CONTAINER=1` runs the same command inside `Containerfile.rerun` with X11 mounts and `--network=host`, so UDP stays on loopback.
 - Manual pilot input goes through the pilot shim: `./scripts/send_pilot_command.py --pitch 0.2 --roll -0.1 --throttle 0.7 --duration 5` sends JSON control packets to UDP 5502.
 - Headless check, no X11 and no Podman: `./scripts/container_rerun_smoke.sh` writes `/tmp/smoke.rrd` and prints PASS/FAIL.
 - Every live run also writes `build/results/flight_viewer.jsonl`; replay it with `python -m flight_viewer --source jsonl --path build/results/flight_viewer.jsonl --sink rerun --spawn`.
+- A recorded federation run (`run_e2e_rpr.py --run-dir ...`) keeps `truth.jsonl`; replay it in the Rerun web viewer with `./scripts/replay_web.sh build/runs/<run>/truth.jsonl` (adds `RATE=2` for a faster pass). Loading the coordinator's `.rrd` opens paused and re-renders slowly under software rasterization, so this streams the truth log live instead; `./scripts/render_replay_rrd.py` writes a lighter `.rrd` when a file is preferred.
 
 ## Retired: RViz viewer
 
@@ -81,7 +85,7 @@ Containerized viewer behavior:
 - `./scripts/check_environment.sh --live-container` validates Podman, the built Rerun image (`test-flight-simulator-rerun`), and the X11 requirements before launch
 - `./scripts/build_airplane.py [scenario-json]` refreshes the local SSP bundle used by both batch and live runs
 - `./scripts/build_rerun_container.sh` builds the reusable Podman Rerun image from `Containerfile.rerun`
-- `./scripts/run_rerun_stack.sh` runs the realtime simulation on the host and starts the viewer either on the host (default) or, with `RERUN_CONTAINER=1`, in the container with X11 mounts and host networking
+- `./scripts/run_rerun_stack.sh` runs the realtime simulation on the host and starts the viewer either on the host (default), with `RERUN_CONTAINER=1` in the container with X11 mounts and host networking, or with `RERUN_WEB=1` as the web viewer (`RERUN_WEB_PORT`, default 9090) in a dedicated Chrome instance that enables SwiftShader WebGL2 (`CHROME_BIN` overrides the browser)
 - `./scripts/container_rerun_smoke.sh` runs the headless Rerun recording check without X11 or Podman
 - `./scripts/run_airplane_scenario.py` only runs `pyssp4sim` against the prepared local config and does not repackage scenario artifacts
 - use `./scripts/run_airplane_scenario.py --realtime` when you want the local realtime config without a viewer

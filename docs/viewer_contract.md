@@ -147,7 +147,7 @@ Python 3.11, package `flight_viewer`, no imports of `rclpy` anywhere.
   `--group`, `--interface`, `--ttl`, `--scenario`, `--config`, `--origin-lat`,
   `--origin-lon`, `--origin-alt`, `--entity-site`, `--entity-application`,
   `--entity-id`, `--exercise-id`, `--dr-algorithm`, `--rrd`, `--record`,
-  `--spawn`, `--path`, `--realtime`, `--duration`, `--count`, `--app-id`.
+  `--spawn`, `--connect-grpc [URL]`, `--path`, `--realtime`, `--duration`, `--count`, `--app-id`.
 - `--source json-udp` defaults to `127.0.0.1:5501`; `--sink dis` defaults to
   unicast `127.0.0.1:3000`.
 - `--telemetry SPEC` is repeatable and selects one UDP telemetry stream per

@@ -45,6 +45,7 @@ class RerunSink(_SharedRerunSink):
         app_id: str = "flight_viewer",
         rrd_path: Optional[Path] = None,
         spawn: bool = False,
+        connect_grpc: Optional[str] = None,
         origin: Optional[Origin] = None,
     ) -> None:
         self._temporary: Optional[Path] = None
@@ -57,6 +58,9 @@ class RerunSink(_SharedRerunSink):
             rrd_path = self._temporary
         self.spawn = bool(spawn)
         super().__init__(rrd_path, app_id=app_id, origin=origin)
+        if connect_grpc is not None:
+            # Stream into an already-running viewer/server (e.g. `rerun --serve-web`).
+            self._rec.connect_grpc(connect_grpc or None)
         if self.spawn:
             try:
                 self._rec.spawn()

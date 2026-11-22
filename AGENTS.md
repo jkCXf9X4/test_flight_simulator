@@ -6,7 +6,7 @@ Key scripts:
 - `scripts/check_environment.sh` — validate host prerequisites (`--source-build`, `--live-container`, `--container-build`)
 - `scripts/build_airplane.py` — build the airplane SSP/FMUs and refresh the local `build/ssp` bundle (resolves `$PYTHON` / workspace venv / airplane venv; run `check_environment.sh --source-build` first)
 - `scripts/build_rerun_container.sh` — build the Podman Rerun viewer image (`Containerfile.rerun`)
-- `scripts/run_rerun_stack.sh` — run the realtime sim plus the Rerun viewer; host venv by default, `RERUN_CONTAINER=1` for the Podman image
+- `scripts/run_rerun_stack.sh` — run the realtime sim plus the Rerun viewer; host venv by default, `RERUN_CONTAINER=1` for the Podman image, `RERUN_WEB=1` for the web viewer in Chrome with SwiftShader WebGL2
 - `scripts/container_rerun_smoke.sh` — headless Rerun recording smoke test (no X11, no Podman)
 - `scripts/send_pilot_command.py` — manual pilot input on UDP 5502
 - `scripts/run_airplane_scenario.py` — run a batch/realtime scenario from the local bundle
@@ -15,6 +15,9 @@ Key scripts:
 - `scripts/generate_instance_manifest.py` — generate/check `manifests/two_instances.manifest.json`
 - `scripts/run_instance_process.py` — manifest command: prepare one bundle (scenario and ports from its environment), then exec its simulation
 - `scripts/run_e2e_rpr.py` — run the federation, adapt telemetry to RPR one-way, record truth/CSV/Rerun, summarize separation
+- `scripts/replay_web.sh` — replay a truth log in the Rerun web viewer (Chrome with SwiftShader WebGL2, streamed live so it animates)
+- `scripts/stream_truth_rerun.py` — stream a truth log into a running Rerun viewer at realtime pace
+- `scripts/render_replay_rrd.py` — build a lightweight `.rrd` from a truth log (short trails) for software rendering
 - `sos/aircraft_federation.sysml` — entity plane and source of truth for the four aircraft; check the lowered manifest with `pysos-sysml manifest sos/aircraft_federation.sysml -o manifests/aircraft_federation.manifest.json --check`
 - `sos/federation_system.sysml` — system plane: frame, timing, host processes, flows and artifacts (SysML v2, lowered by `pycps_sysml2`)
 - `scripts/sos_model.py` — lower the system plane and check it against the manifest; must print `ok:` before a federation run (`--artifacts` also verifies the built aircraft SSPs)

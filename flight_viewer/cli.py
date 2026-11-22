@@ -59,6 +59,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--rrd", type=Path, default=None, help="write a .rrd recording")
     parser.add_argument("--spawn", action="store_true", help="spawn the live Rerun viewer")
+    parser.add_argument(
+        "--connect-grpc",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="URL",
+        help="stream into a running viewer/server (default URL when omitted)",
+    )
     parser.add_argument("--record", type=Path, default=None, help="also write a JSONL recording")
     parser.add_argument("--path", type=Path, default=None, help="JSONL file for source/sink jsonl")
     parser.add_argument("--duration", type=float, default=0.0, help="seconds, 0 = forever")
@@ -242,6 +250,7 @@ class _Sink:
                 app_id=args.app_id,
                 rrd_path=args.rrd,
                 spawn=args.spawn,
+                connect_grpc=args.connect_grpc,
                 origin=config.origin,
             )
         elif args.sink == "dis":
