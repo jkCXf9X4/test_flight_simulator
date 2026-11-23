@@ -35,16 +35,20 @@ variant telemetry endpoint (5510/5512/5514/5516) and peers at 5505.
 ## System plane
 
 `federation_system.sysml` (package `FederationSystem`) models everything that is
-not an aircraft instance: the shared frame and origin, the timing contract, the
-aircraft (`private import Aircraft::*;` — the real composition, parameters and
-FMU sources come from `3rd_party/airplane/architecture/aircraft.sysml`; the
-system plane adds only the structural RPR broadcast boundary port), the host-side
-participants (`orchestrator` = supervisor + recorder listening on RPR 5505,
-`viewer` replaying the recorder truth stream, `builder`), the flow between them
-and the run artifacts. It is SysML v2 lowered through `pycps_sysml2` by
-`scripts/sos_model.py`, and it references the entity plane instead of repeating
-it (`part instances : AircraftInstance [4]`, typed by the imported
-`AircraftModel`).
+not an aircraft participant: the shared frame and origin, the timing contract,
+the host-side participants (`orchestrator` = supervisor + recorder listening on
+RPR 5505, `viewer` replaying the recorder truth stream, `builder`), the flows
+between them and the run artifacts. It imports both planes instead of repeating
+them: `private import Aircraft::*;` brings the real aircraft composition
+(`3rd_party/airplane/architecture/aircraft.sysml`), and
+`private import AircraftFederation::*;` brings the entity plane's participant
+defs and the order of `AircraftFederation::Federation`. The system plane
+declares one part per participant (`part red_interceptor :
+RedInterceptorParticipant;`, then `red_striker`, `blue_cas`, `blue_baseline`)
+in that order, plus one `rpr_broadcast_<part>` connection each. It is SysML v2
+lowered through `pycps_sysml2` by `scripts/sos_model.py`, which fails if the
+participants, their types or their order drift from the entity plane or the
+manifest.
 
 ```bash
 PY=/home/eriro/pwa/2_work/flight_sim/venv/bin/python3

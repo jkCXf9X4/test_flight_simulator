@@ -1,14 +1,17 @@
-// System plane of the aircraft federation: the aircraft itself, every other
-// piece of software that runs, the frame and timing they share, the flows
+// System plane of the aircraft federation: the aircraft participants, every
+// other piece of software that runs, the frame and timing they share, the flows
 // between them, and the artifacts a run is judged by.
 //
 // Authored in SysML v2 and lowered by scripts/sos_model.py (pycps_sysml2 IR).
-// The entity plane — the four named aircraft instances with their ports,
+// The entity plane — the four named aircraft participants with their ports,
 // scenarios and run parameters — stays in sos/aircraft_federation.sysml and is
-// lowered by pysos_sysml to the pysos_coordinate manifest. Both planes import
-// the same Aircraft model and the same PysosSoS::LaunchSpec vocabulary. Two
-// files remain because the pysos_sysml subset still rejects ports,
-// connections and timing; see docs/sos_model.md §3.
+// lowered by pysos_sysml to the pysos_coordinate manifest. The system plane
+// imports that package (`private import AircraftFederation::*;`): the
+// participant defs and their order in `AircraftFederation::Federation` are
+// authoritative here, so this file declares one part per participant by type
+// instead of restating the aircraft. The entity plane stays separately lowered
+// because the pysos_sysml subset still rejects ports, connections and timing;
+// the system plane imports it for types and order. See docs/sos_model.md §3.
 //
 // The aircraft is imported from 3rd_party/airplane/architecture/aircraft.sysml
 // (package Aircraft) instead of being restated here. The SSP's
@@ -17,20 +20,18 @@
 // the imported model, component by component.
 package FederationSystem {
   private import Aircraft::*;
+  private import AircraftFederation::*;
   private import PysosSoS::*;
   private import RprEntity::*;
 
   // -- interfaces: role markers, not fact carriers ------------------------
-  // The aircraft broadcasts RPR entity-state packets: one outbound edge per
-  // instance, addressed to the recorder. Transport lives in the entity plane's
-  // transport sets, the wire version in RprEntity::RprContract, cadence in
-  // Timing, and the listener endpoint on Orchestrator. `sos_model.py` derives
-  // the flow contract from those owners and fails on disagreement.
-  // A port usage on the AircraftInstance wrapper is the process boundary, so
-  // externality is structural and nothing is authored here.
-  port def RprBroadcast;
-
-  port def RprListener;
+  // RprBroadcast and RprListener come from the entity plane
+  // (AircraftFederation::*). They carry no attributes: the aircraft broadcasts
+  // one outbound RPR entity-state edge per participant, addressed to the
+  // recorder. Transport lives in each participant's transport set, the wire
+  // version in RprEntity::RprContract, cadence in Timing, and the listener
+  // endpoint on Orchestrator. `sos_model.py` derives the flow contract from
+  // those owners and fails on disagreement.
 
   // -- shared frame --------------------------------------------------------
   part def FrameOrigin {
@@ -56,18 +57,6 @@ package FederationSystem {
     attribute epoch : String = "per_process_monotonic";
     attribute barrier : String = "none";
     attribute overrun_policy : String = "lag";
-  }
-
-  // -- the actual aircraft ------------------------------------------------
-  // Imported from the airplane submodule, not duplicated: component defs,
-  // ports, parameter defaults, FMU sources and the inter-component
-  // connections all come from AircraftModel.
-  // The federation adds only the boundary port the airplane architecture does
-  // not declare: the RPR broadcast edge served by `rpr_entity` (no SSP
-  // connector). `telemetry` is the manifest endpoint name; its type is RPR.
-  part def AircraftInstance {
-    part aircraft : AircraftModel;
-    port telemetry : RprBroadcast;
   }
 
   // -- host-side participants ---------------------------------------------
@@ -144,12 +133,23 @@ package FederationSystem {
 
     part origin : FrameOrigin;
     part timing : Timing;
-    part instances : AircraftInstance [4];
+    // One part per entity-plane participant, in the order declared by
+    // AircraftFederation::Federation. Each type brings its nested aircraft,
+    // application and `telemetry : RprBroadcast` port; nothing is restated.
+    part red_interceptor : RedInterceptorParticipant;
+    part red_striker : RedStrikerParticipant;
+    part blue_cas : BlueCasParticipant;
+    part blue_baseline : BlueBaselineParticipant;
     part orchestrator : Orchestrator;
     part viewer : Viewer;
     part builder : Builder;
     part artifacts : Artifacts;
 
-    connection rpr_broadcast connect instances.telemetry to orchestrator.rpr_in;
+    // One outbound RPR broadcast per participant, fanned in on the recorder's
+    // listener port.
+    connection rpr_broadcast_red_interceptor connect red_interceptor.telemetry to orchestrator.rpr_in;
+    connection rpr_broadcast_red_striker connect red_striker.telemetry to orchestrator.rpr_in;
+    connection rpr_broadcast_blue_cas connect blue_cas.telemetry to orchestrator.rpr_in;
+    connection rpr_broadcast_blue_baseline connect blue_baseline.telemetry to orchestrator.rpr_in;
   }
 }

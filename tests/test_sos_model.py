@@ -58,8 +58,21 @@ def _with_entity(federation, name: str, **changes):
 
 
 def test_model_and_manifest_are_complete():
-    assert sos_model.check(_manifest(), _model()) == []
+    model = _model()
+    assert sos_model.check(_manifest(), model) == []
     FederationSpec.from_json(_manifest()).validate()
+
+    entity = _federation()
+    assert [instance.name for instance in model.instances] == [
+        instance.name for instance in entity.instances
+    ]
+    assert [instance.order for instance in model.instances] == list(
+        range(len(model.instances))
+    )
+    assert [instance.participant.split("::")[-1] for instance in model.instances] == [
+        instance.part_def for instance in entity.instances
+    ]
+    assert model.instance_count == len(model.instances) == 4
 
 
 def test_every_instance_is_paced_and_bounded():
@@ -115,7 +128,9 @@ def test_host_port_collision_is_reported():
 
 def test_every_telemetry_port_feeds_a_modelled_flow():
     model = _model()
-    flows = tuple(flow for flow in model.flows if flow.name != "rpr_broadcast")
+    flows = tuple(
+        flow for flow in model.flows if flow.name != "rpr_broadcast_red_interceptor"
+    )
 
     problems = sos_model.check(_manifest(), replace(model, flows=flows))
 
@@ -168,10 +183,10 @@ def test_flow_protocol_is_derived_from_each_source_transport():
     problems = sos_model._check_flows(_manifest(), model, federation)
 
     assert any(
-        "flows.rpr_broadcast.protocol: blue_cas transport 'loopback'" in item
+        "flows.rpr_broadcast_blue_cas.protocol: blue_cas transport 'loopback'" in item
         for item in problems
     )
-    assert any("flows.rpr_broadcast.protocol: sources disagree" in item for item in problems)
+    assert any("flows: marker sources disagree on protocol" in item for item in problems)
 
 
 def test_flow_encoding_is_derived_from_the_imported_rpr_contract():
@@ -205,7 +220,7 @@ def test_flow_rate_is_derived_from_timing():
     stalled = replace(model, timing=replace(model.timing, step_size_s=0.0))
     _resolved, problems = sos_model._flow_contract(stalled, flow, _manifest(), _federation())
     assert any(
-        "flows.rpr_broadcast.rate_hz: Timing.step_size_s 0.0 must be > 0" in item
+        "flows.rpr_broadcast_red_interceptor.rate_hz: Timing.step_size_s 0.0 must be > 0" in item
         for item in problems
     )
 
@@ -215,18 +230,27 @@ def test_four_fan_in_sources_share_one_listener_without_a_collision():
     manifest = _manifest()
     processes = {process.name: process for process in model.processes}
     instances = sos_model._instances(manifest)
+    expected = [instance.name for instance in model.instances]
 
-    sources, source_problem = sos_model._resolve_reference(
-        model.flows[0].source, instances, processes
-    )
-    targets, target_problem = sos_model._resolve_reference(
-        model.flows[0].target, instances, processes
-    )
+    assert len(model.flows) == model.instance_count == 4
+    covered: list[str] = []
+    for flow in model.flows:
+        sources, source_problem = sos_model._resolve_reference(
+            flow.source, instances, processes
+        )
+        targets, target_problem = sos_model._resolve_reference(
+            flow.target, instances, processes
+        )
 
-    assert source_problem is None
-    assert target_problem is None
-    assert len(sources) == model.instance_count == 4
-    assert [target.label for target in targets] == ["orchestrator/rpr_in"]
+        assert source_problem is None
+        assert target_problem is None
+        assert len(sources) == 1
+        assert sources[0].scope == "instance"
+        covered.append(sources[0].component)
+        assert [target.label for target in targets] == ["orchestrator/rpr_in"]
+
+    assert covered == expected
+    assert len(set(covered)) == 4
     assert sos_model._check_ports(manifest, model) == []
     assert sos_model._check_flows(manifest, model, _federation()) == []
 
@@ -368,8 +392,9 @@ def test_application_scenario_metadata_is_required():
 def test_system_plane_is_authored_in_sysml_v2():
     assert MODEL_PATH.suffix == ".sysml"
     text = MODEL_PATH.read_text(encoding="utf-8")
-    assert "port def RprBroadcast;" in text
-    assert "port def RprListener;" in text
+    assert "private import AircraftFederation::*;" in text
+    assert "port def RprBroadcast;" not in text
+    assert "port def RprListener;" not in text
     assert 'attribute rprPort : Integer = 5505;' in text
 
     model = _model()
@@ -456,7 +481,11 @@ def test_instance_count_must_match_the_manifest():
 
     problems = sos_model.check(_manifest(), replace(model, instance_count=2))
 
-    assert any("manifest.instances has 4 entr(ies) but the model declares part instances : 2" in item for item in problems)
+    assert any(
+        "manifest.instances has 4 entr(ies) but the model declares 2 participant part(s)"
+        in item
+        for item in problems
+    )
 
 
 def test_missing_system_description_is_rejected(tmp_path):
@@ -570,7 +599,10 @@ def test_system_plane_imports_the_airplane_architecture():
     assert "part def Pilot" not in model_text
     assert "ControlInterface" not in model_text
     assert "private import RprEntity::*;" in model_text
-    assert "port def RprBroadcast;" in model_text
+    assert "private import AircraftFederation::*;" in model_text
+    assert "port def RprBroadcast;" not in model_text
+    assert "part def AircraftInstance" not in model_text
+    assert "part instances :" not in model_text
 
 
 def test_missing_reference_origin_is_reported():
@@ -651,4 +683,58 @@ def test_declared_architecture_must_exist(tmp_path):
     )
 
     with pytest.raises(sos_model.ModelError, match="does not exist"):
+        sos_model.load_model(source)
+
+
+def test_system_plane_must_import_the_entity_plane(tmp_path):
+    source = tmp_path / "federation_system.sysml"
+    source.write_text(
+        MODEL_PATH.read_text(encoding="utf-8").replace(
+            "  private import AircraftFederation::*;\n", ""
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(sos_model.ModelError, match="AircraftFederation::\\*"):
+        sos_model.load_model(source)
+
+
+def test_participant_order_must_match_the_entity_plane(tmp_path):
+    text = MODEL_PATH.read_text(encoding="utf-8")
+    swapped = text.replace(
+        "    part red_interceptor : RedInterceptorParticipant;\n"
+        "    part red_striker : RedStrikerParticipant;\n",
+        "    part red_striker : RedStrikerParticipant;\n"
+        "    part red_interceptor : RedInterceptorParticipant;\n",
+    )
+    assert swapped != text
+    source = tmp_path / "federation_system.sysml"
+    source.write_text(swapped, encoding="utf-8")
+
+    with pytest.raises(sos_model.ModelError, match="order is authoritative"):
+        sos_model.load_model(source)
+
+
+def test_participant_must_be_typed_by_its_entity_definition(tmp_path):
+    text = MODEL_PATH.read_text(encoding="utf-8")
+    mistyped = text.replace(
+        "    part blue_cas : BlueCasParticipant;",
+        "    part blue_cas : RedInterceptorParticipant;",
+    )
+    assert mistyped != text
+    source = tmp_path / "federation_system.sysml"
+    source.write_text(mistyped, encoding="utf-8")
+
+    with pytest.raises(sos_model.ModelError, match="BlueCasParticipant"):
+        sos_model.load_model(source)
+
+
+def test_missing_participant_part_is_rejected(tmp_path):
+    text = MODEL_PATH.read_text(encoding="utf-8")
+    missing = text.replace("    part blue_baseline : BlueBaselineParticipant;\n", "")
+    assert missing != text
+    source = tmp_path / "federation_system.sysml"
+    source.write_text(missing, encoding="utf-8")
+
+    with pytest.raises(sos_model.ModelError, match="blue_baseline"):
         sos_model.load_model(source)

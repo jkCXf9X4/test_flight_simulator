@@ -68,20 +68,28 @@ in the variant `ParameterSet` sets and reach the run through the exported SSP;
 the manifest carries the process facts. `scripts/sos_model.py` resolves the
 system plane *against* the manifest and fails on any gap.
 
-The aircraft is **imported, not restated**: `sos/federation_system.sysml` says
-`private import Aircraft::*;` and the checker loads
+The aircraft and its participants are **imported, not restated**:
+`sos/federation_system.sysml` says `private import Aircraft::*;` and
+`private import AircraftFederation::*;`, and the checker loads
 `3rd_party/airplane/architecture/aircraft.sysml` (package `Aircraft`, declared by
-the `architecture` attribute) alongside the bundled RPR entity definition from
-`pyfmi_rpr`. Eleven FMI 2.0 co-simulation FMUs (nine Modelica models plus
-`rpr_state_source` and `rpr_entity`), their ports, parameter-set defaults, FMU
-sources and the 23 inter-component connections come from `AircraftModel`; the
-system plane adds only `part def AircraftInstance` with the one RPR broadcast
+the `architecture` attribute), `sos/aircraft_federation.sysml` (package
+`AircraftFederation`, declared by the `entity_model` attribute) and the bundled
+RPR entity definition from `pyfmi_rpr`. Eleven FMI 2.0 co-simulation FMUs (nine
+Modelica models plus `rpr_state_source` and `rpr_entity`), their ports,
+parameter-set defaults, FMU sources and the 23 inter-component connections come
+from `AircraftModel`. The system plane declares one part per
+`AircraftFederation::Federation` participant, typed by the entity plane's
+`<X>Participant` def and in the entity plane's order; each participant brings
+its nested `aircraft : <Variant>`, `application` and the one RPR broadcast
 boundary port (`telemetry`, which no SSP component declares). That port is the
-structural process boundary, not a Boolean `external` flag.
+structural process boundary, not a Boolean `external` flag. `sos_model.py` fails
+if a participant part is missing, typed with another participant def, or declared
+out of order, and it walks each variant's `specializes` chain to prove it
+reaches `AircraftModel`.
 
 Import resolution works with the shipped `pycps_sysml2`; the model names the
-architecture file, and the checker supplies `pyfmi_rpr`'s bundled `RprEntity`
-definition as a second include root because the architecture imports it. The
+architecture and entity files, and the checker supplies the `PysosSoS`,
+`PysspCore` and `RprEntity` include roots. The
 SSP's `SystemStructure.ssd` stays authoritative for field-level wiring;
 the checker proves the built SSP still matches the imported model instead of
 duplicating 286 scalar connectors in SysML.
@@ -107,7 +115,7 @@ system-of-systems layer, not for the aircraft model.
 | --- | --- | --- |
 | `experimental_pyssp_standard` (SSP/SSD/SSV/SSM) | describes and packs FMU composition: components, connectors, connections, parameter sets/mappings, `DefaultExperiment`; no executor | **rejected as the SoS model, adopted inside an instance.** Components are FMUs and connections are FMI connectors, so an entity's internals belong here (`build/ssp/scenario.ssp`), but a process federation is not an SSP. `pyssp_standard` has no process, timing policy, entity identity or frame. |
 | `pysos_sysml` | lowers one SysML package of `part` usages to the coordinator manifest | **adopted for the entity plane.** It now uses the `pycps_sysml2` base for imports/include roots, entity composition (`part aircraft : AircraftModel`) and the shared `PysosSoS::LaunchSpec`. It still rejects ports, connections and timing, so run parameters ride in the exported variant SSPs and the application names its variant on the command line. The entity plane and the system plane therefore compose the same imported `AircraftModel` instead of restating it. |
-| `pycps_sysml2` (the SysML v2 IR) | parses packages, part/port definitions, part usages, port usages, connections and typed attribute values (`Real`, `Integer`, `Boolean`, `String`) | **adopted as the system-plane lowering.** It already carries what `pysos_sysml` rejects, so the system plane is authored as SysML v2 and lowered here. Gap: part-usage multiplicity is dropped, so `part instances : AircraftInstance [4]` is recovered by a one-line lexical adjunct (the same workaround `pysos_sysml` uses). It also carries cross-package imports (`Architecture.imports`), which is how the aircraft architecture is pulled in. |
+| `pycps_sysml2` (the SysML v2 IR) | parses packages, part/port definitions, part usages, port usages, connections and typed attribute values (`Real`, `Integer`, `Boolean`, `String`) | **adopted as the system-plane lowering.** It already carries what `pysos_sysml` rejects, so the system plane is authored as SysML v2 and lowered here. Gap: part-usage multiplicity is dropped; the model no longer relies on it — participant count and order come from `AircraftFederation::Federation` through `effective_members`. It also carries cross-package imports (`Architecture.imports`), which is how the aircraft architecture and the entity plane are pulled in. |
 | `pysos_coordinate` | process supervision: spawn, log, SIGTERM/SIGKILL by process group, exit codes | **adopted.** It owns no clock: `timing` accepts only `wall_clock` and is never read by the supervisor; `startup_timeout` is validated but unenforced; there is no readiness gate, heartbeat or restart. The timing contract below records this instead of pretending otherwise. |
 | `ssp4sim` + `pyssp4sim` | per-instance fixed-step FMI 2.0 CS execution, absolute-deadline wall-clock pacing | **adopted, one process per instance.** `realtime: true` is a blocking `sleep_until` from a `CLOCK_MONOTONIC` reference captured at executor construction; no drift estimate and no overrun policy (an overrun free-runs until it catches up). There is no external `doStep`, pause or command channel. |
 | `pyssp_simulate` | config construction, backend dispatch, result CSV reading | **adopted** as the thin wrapper that runs the ssp4sim child process. |
@@ -139,6 +147,7 @@ sos/aircraft_federation.sysml     entity plane, SysML v2, lowered by pysos_sysml
      └─ manifests/aircraft_federation.manifest.json   schema 1 (pysos_coordinate)
 sos/federation_system.sysml       system plane, SysML v2, lowered by pycps_sysml2
   ├─ private import Aircraft::*   the same composition, parameters, FMU sources
+  ├─ private import AircraftFederation::*  participants, their types and order
   ├─ private import PysosSoS::*   the same launch vocabulary for host processes
   └─ scripts/sos_model.py         lowered model + manifest resolution + checks
 scripts/entity_manifest.py        lowers the entity plane with its include roots
@@ -148,7 +157,8 @@ tests/test_sos_model.py           the completeness gate
 
 Two SysML files, one per plane, because `pysos_sysml` still rejects the
 constructs the system plane needs (ports, connections, timing) and no single
-lowering accepts both. The two planes now share the same imported
+lowering accepts both. The system plane imports the entity plane for its
+participant defs and their order, and the two planes share the same imported
 `AircraftModel` and the same `LaunchSpec` vocabulary; `scripts/sos_model.py`
 proves the entity plane, the manifest and the system plane agree. Each file is
 the only authority for its plane; the system plane references the entity plane,
@@ -170,7 +180,8 @@ SSV/SSM; that legacy rewrite path remains for the baseline bundle.
 System-plane SysML (package `FederationSystem`, entry `part def
 SystemDescription`):
 
-- `port def RprBroadcast` / `RprListener` are role markers with no attributes.
+- `port def RprBroadcast` / `RprListener` — imported from the entity plane
+  (`AircraftFederation::*`); role markers with no attributes.
   The flow contract is derived from its owners: protocol from each source's
   variant `Transport` set (`udp`), encoding from the imported
   `RprEntity::RprContract.version` (`rpr.v2` → `rpr`), rate from
@@ -181,10 +192,12 @@ SystemDescription`):
 - `part def Timing` — `soft_realtime`, 0.1 s step, 10 Hz sample period, 2.0 s
   fan-in watchdog, 0.25 s recording interval, 120 s stop time,
   `per_process_monotonic` epoch, `barrier: none`, `overrun_policy: lag`;
-- `part def AircraftInstance` — the imported `AircraftModel` plus the one
-  structural RPR broadcast port; `part instances : AircraftInstance [4]` is the
-  flow pattern, one occurrence per manifest entry. Identity, endpoints, scenario
-  values and the application stay in the entity plane;
+- imported entity participants — `part red_interceptor : RedInterceptorParticipant`
+  (then `red_striker`, `blue_cas`, `blue_baseline`) mirror
+  `AircraftFederation::Federation` by type and order; each participant brings
+  its nested variant `aircraft`, `application` and the structural
+  `telemetry : RprBroadcast` port. Identity, endpoints, scenario values and the
+  application stay in the entity plane;
 - `part def Orchestrator` / `Viewer` / `Builder :> Application` — the host-side
   processes specialize the shared `PysosSoS::Application` (roles, command, cwd)
   and declare their own nested `part launch : LaunchSpec` (`mode`, `readiness`,
@@ -193,9 +206,10 @@ SystemDescription`):
   order 0, orchestrator after the builder, viewer after the recorder, no cycles.
   The orchestrator binds RPR 5505; the viewer reads the recorder truth file and
   owns no socket;
-- `connection <name> connect a.p to b.q` — the RPR broadcast flow; a connection
-  to the multiplicity part lowers to the `instance/*` wildcard, and its
-  protocol, encoding and rate come from the source owners, not the marker port;
+- `connection rpr_broadcast_<part> connect <part>.telemetry to
+  orchestrator.rpr_in` — one RPR broadcast flow per participant; each lowers to
+  an `instance/<part>/telemetry` source, and its protocol, encoding and rate
+  come from the source owners, not the marker port;
 - `part def Artifacts` — `build/runs/sos4` and the files the run is judged by.
 
 ## 4. Frame contract

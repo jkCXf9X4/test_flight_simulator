@@ -20,7 +20,7 @@ Key scripts:
 - `scripts/stream_truth_rerun.py` — stream a truth log into a running Rerun viewer at realtime pace
 - `scripts/render_replay_rrd.py` — build a lightweight `.rrd` from a truth log (short trails) for software rendering
 - `sos/aircraft_federation.sysml` — entity plane and source of truth for the four aircraft variants; it imports the real `Aircraft` model and the shared `PysosSoS::LaunchSpec`, defines the variant `ParameterSet` sets (Scenario/Identity/Transport), the applications and the participants, and is lowered by `scripts/entity_manifest.py` (check with `scripts/entity_manifest.py --check`)
-- `sos/federation_system.sysml` — system plane: frame, timing, host processes (recorder, viewer, builder), the RPR broadcast flow and artifacts (SysML v2, lowered by `pycps_sysml2`)
+- `sos/federation_system.sysml` — system plane: frame, timing, the four entity-plane participants imported by type and order from `sos/aircraft_federation.sysml`, host processes (recorder, viewer, builder), the four RPR broadcast flows and artifacts (SysML v2, lowered by `pycps_sysml2`)
 - `scripts/sos_model.py` — lower the system plane and check it against the manifest; must print `ok:` before a federation run (`--artifacts` also verifies the baseline aircraft SSPs; the variant archives are validated by `export_aircraft_variants.py`)
 - `scripts/render_showcase_movie.py` — render a showcase movie from a recorded capture (its RViz capture path has been retired)
 

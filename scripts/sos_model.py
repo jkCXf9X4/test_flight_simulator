@@ -13,19 +13,22 @@ accepts the whole federation today:
   the real ``Aircraft`` architecture, so every ``AircraftEntity`` composes
   ``AircraftModel`` instead of restating it;
 * the **system plane** is ``sos/federation_system.sysml``: the shared frame, the
-  federation timing contract, the host-side participants
-  (orchestrator/recorder, viewer, builder), the RPR broadcast flow and the run
-  artifacts. This module lowers it from the ``pycps_sysml2`` IR, which already
-  carries port definitions, port usages, connections and typed attribute
-  values. The system plane imports the aircraft architecture (package
-  ``Aircraft``) and pyfmi_rpr's bundled ``RprEntity`` definition instead of
-  restating them; the import target is named by the ``architecture`` attribute.
+  federation timing contract, the aircraft participants, the host-side
+  participants (orchestrator/recorder, viewer, builder), the RPR broadcast flows
+  and the run artifacts. This module lowers it from the ``pycps_sysml2`` IR,
+  which already carries port definitions, port usages, connections and typed
+  attribute values. The system plane imports the aircraft architecture (package
+  ``Aircraft``), the entity plane (package ``AircraftFederation``) and
+  pyfmi_rpr's bundled ``RprEntity`` definition instead of restating them; the
+  import targets are named by the ``architecture`` and ``entity_model``
+  attributes.
 
 Authority is one-fact-one-place. The system plane never restates instance data:
-``part instances : AircraftInstance [4]`` is one pattern, and connections to it are
-lowered to the ``instance/*`` wildcard. This module resolves that pattern
-against the lowered manifest and reports every fact that is missing or
-contradictory, so "the model is complete" is a checkable claim.
+each participant is a part typed by the entity plane's ``<X>Participant`` def,
+in the order ``AircraftFederation::Federation`` declares. This module resolves
+those parts against the entity plane and the lowered manifest and reports every
+fact that is missing or contradictory, so "the model is complete" is a
+checkable claim.
 
 ``pysos_sysml`` exposes the variant/application parameter sets on the entity
 model while the manifest carries only the runnable command and lowered
@@ -45,7 +48,7 @@ import re
 import shlex
 import sys
 import zipfile
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -54,6 +57,7 @@ from xml.etree import ElementTree
 import entity_manifest
 import pycps_sysml2
 import pysos_sysml
+import pyssp_sysml_definitions
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
@@ -63,7 +67,7 @@ DEFAULT_MANIFEST = REPO_ROOT / "manifests" / "aircraft_federation.manifest.json"
 
 SCHEMA_VERSION = 1
 SYSTEM_DEF = "SystemDescription"
-RESERVED_PARTS = ("origin", "timing", "instances", "artifacts")
+RESERVED_PARTS = ("origin", "timing", "artifacts")
 TIMING_POLICIES = frozenset({"wall_clock"})
 TIMING_CLASSES = frozenset({"soft_realtime", "hard_realtime", "batch"})
 FRAME_MODES = frozenset({"federation"})
@@ -96,15 +100,6 @@ FMI_INTERFACE = "CoSimulation"
 
 #: Artifact attribute names that differ from the contract key they fill.
 ARTIFACT_ALIASES = {"run_json": "run", "instances_dir": "instances", "logs_dir": "logs"}
-
-#: A part-usage occurrence count, written ``part name : Type [N]``. The parser
-#: (pycps_sysml2 0.3.0) drops usage multiplicity, so this lexical adjunct reads
-#: the annotation it loses. It is not a general SysML reader.
-_MULTIPLICITY = re.compile(
-    r"^\s*part\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
-    r"\s*:\s*(?P<type>[A-Za-z_][A-Za-z0-9_:]*)"
-    r"\s*\[\s*(?P<count>[^\]]*?)\s*\]"
-)
 
 
 class ModelError(ValueError):
@@ -210,6 +205,15 @@ class Artifacts:
 
 
 @dataclass(frozen=True)
+class Instance:
+    """One entity-plane participant occurrence, in declared order."""
+
+    name: str
+    participant: str
+    order: int
+
+
+@dataclass(frozen=True)
 class SystemModel:
     schema: int
     federation: str
@@ -228,6 +232,8 @@ class SystemModel:
     processes: tuple[Process, ...]
     flows: tuple[Flow, ...]
     artifacts: Artifacts
+    #: Entity-plane participants, in ``AircraftFederation::Federation`` order.
+    instances: tuple[Instance, ...] = ()
     #: ``RprEntity::RprContract.version`` from the imported wire contract, if
     #: the architecture provides one. Marker flows derive their encoding here.
     rpr_contract: str | None = None
@@ -332,25 +338,6 @@ def _string_list(attributes: Mapping[str, tuple[str, Any]], key: str, where: str
     if not items:
         raise ModelError(f"{where}.{key}: expected a comma-separated list of names")
     return items
-
-
-def _multiplicities(path: Path) -> dict[str, tuple[str, int]]:
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise ModelError(f"cannot read model: {exc}") from exc
-    found: dict[str, tuple[str, int]] = {}
-    for line in lines:
-        match = _MULTIPLICITY.match(line)
-        if match is None:
-            continue
-        raw = match.group("count")
-        if not raw.isdigit() or int(raw) < 1:
-            raise ModelError(
-                f"{path}:{match.group('name')}: multiplicity must be a positive integer, e.g. [3]"
-            )
-        found[match.group("name")] = (match.group("type"), int(raw))
-    return found
 
 
 def _parse_origin(definition: Any) -> Origin:
@@ -620,15 +607,30 @@ def _is_parameter_interface(port_def: Any) -> bool:
     )
 
 
-def _parse_aircraft(architecture: Any, usage: Any) -> Aircraft:
-    """Lower the imported aircraft model referenced by ``part instances``."""
+def _specializes(architecture: Any, definition: Any, target_key: str) -> bool:
+    """Whether ``definition`` specializes ``target_key``, transitively."""
 
-    wrapper = _part_definition(architecture, usage.type_name)
-    aircraft_usage = (wrapper.parts or {}).get("aircraft")
-    if aircraft_usage is None:
-        raise ModelError(f"part def {wrapper.name}: expected a nested 'aircraft' part")
-    model = _part_definition(architecture, aircraft_usage.type_name)
-    parts = dict(model.parts or {})
+    pending = [definition]
+    seen: set[str] = set()
+    while pending:
+        current = pending.pop(0)
+        key = architecture.stored_key(current)
+        if key == target_key:
+            return True
+        if key in seen:
+            continue
+        seen.add(key)
+        for base in current.specializes or ():
+            pending.append(_part_definition(architecture, base))
+    return False
+
+
+def _parse_aircraft(architecture: Any, participants: Sequence[tuple[str, Any]]) -> Aircraft:
+    """Lower the imported ``AircraftModel`` and prove every participant composes it."""
+
+    model = _part_definition(architecture, "AircraftModel")
+    members = pycps_sysml2.effective_members(architecture, model)
+    parts = dict(members.parts or {})
 
     components: list[Component] = []
     for name, part in parts.items():
@@ -652,7 +654,7 @@ def _parse_aircraft(architecture: Any, usage: Any) -> Aircraft:
         )
 
     wires: list[Wire] = []
-    for connection in (model.connections or {}).values():
+    for connection in (members.connections or {}).values():
         source, target = connection.source_part, connection.destination_part
         if source not in parts or target not in parts:
             continue
@@ -669,6 +671,21 @@ def _parse_aircraft(architecture: Any, usage: Any) -> Aircraft:
     # aircraft as a different primary/include root, so `stored_key` would drop
     # the package on one side and keep it on the other.
     key = f"{model.package}::{model.name}" if model.package else model.name
+
+    target_key = architecture.stored_key(model)
+    for name, participant in participants:
+        aircraft_usage = (
+            pycps_sysml2.effective_members(architecture, participant).parts or {}
+        ).get("aircraft")
+        if aircraft_usage is None:
+            raise ModelError(f"participant {name}: expected a nested 'aircraft' part")
+        variant = _part_definition(architecture, aircraft_usage.type_name)
+        if not _specializes(architecture, variant, target_key):
+            raise ModelError(
+                f"participant {name}.aircraft: {architecture.stored_key(variant)!r} does "
+                f"not specialize {target_key!r}"
+            )
+
     return Aircraft(
         system=model.name,
         key=key,
@@ -677,42 +694,80 @@ def _parse_aircraft(architecture: Any, usage: Any) -> Aircraft:
     )
 
 
-def _parse_flows(architecture: Any, system: Any, multiplicity_parts: Iterable[str]) -> tuple[Flow, ...]:
-    wildcards = set(multiplicity_parts)
-    flows: list[Flow] = []
+def _parse_flows(
+    architecture: Any, system: Any, instance_names: Sequence[str]
+) -> tuple[Flow, ...]:
+    """Lower one outbound telemetry connection per entity-plane participant."""
+
     parts = dict(system.parts or {})
+    instances = list(instance_names)
+    instance_set = set(instances)
+    pending = set(instances)
+    flows: list[Flow] = []
     for connection in (system.connections or {}).values():
-        if connection.source_part not in parts or connection.destination_part not in parts:
+        source_part = connection.source_part
+        target_part = connection.destination_part
+        if source_part not in parts or target_part not in parts:
             raise ModelError(
                 f"connection {connection.name!r}: both endpoints must be parts of {SYSTEM_DEF}"
             )
-        source_type = _part_definition(architecture, parts[connection.source_part].type_name)
-        source_port = source_type.ports[connection.source_port]
+        if source_part not in instance_set:
+            raise ModelError(
+                f"connection {connection.name!r}: source {source_part!r} is not an "
+                f"entity-plane participant"
+            )
+        if target_part in instance_set:
+            raise ModelError(
+                f"connection {connection.name!r}: target {target_part!r} is a participant; "
+                f"the listener must be a host process"
+            )
+        if source_part not in pending:
+            raise ModelError(
+                f"connection {connection.name!r}: duplicate outbound telemetry for "
+                f"participant {source_part!r}"
+            )
+        source_type = _part_definition(architecture, parts[source_part].type_name)
+        source_ports = pycps_sysml2.effective_members(architecture, source_type).ports or {}
+        if connection.source_port not in source_ports:
+            raise ModelError(
+                f"connection {connection.name!r}: participant {source_part!r} declares no "
+                f"port {connection.source_port!r}"
+            )
+        source_port = source_ports[connection.source_port]
+        target_type = _part_definition(architecture, parts[target_part].type_name)
+        target_ports = pycps_sysml2.effective_members(architecture, target_type).ports or {}
+        if connection.destination_port not in target_ports:
+            raise ModelError(
+                f"connection {connection.name!r}: {target_part!r} ({target_type.name}) "
+                f"declares no port {connection.destination_port!r}"
+            )
         protocol, encoding, rate_hz = _port_contract(
             architecture, source_port.type_name, f"connection {connection.name}"
         )
         flows.append(
             Flow(
                 name=connection.name,
-                source=_reference(connection.source_part, connection.source_port, wildcards),
-                target=_reference(connection.destination_part, connection.destination_port, wildcards),
+                source=f"instance/{source_part}/{connection.source_port}",
+                target=f"{target_part}/{connection.destination_port}",
                 protocol=protocol,
                 encoding=encoding,
                 rate_hz=rate_hz,
             )
         )
+        pending.discard(source_part)
     if not flows:
         raise ModelError(f"{SYSTEM_DEF} declares no connections")
+    if pending:
+        raise ModelError(
+            f"{SYSTEM_DEF}: participant(s) {sorted(pending)} have no outbound telemetry "
+            f"connection"
+        )
     return tuple(flows)
 
 
-def _reference(part_name: str, port_name: str, wildcards: set[str]) -> str:
-    if part_name in wildcards:
-        return f"instance/*/{port_name}"
-    return f"{part_name}/{port_name}" if port_name else part_name
-
-
-def parse_architecture(architecture: Any, source: Path) -> SystemModel:
+def parse_architecture(
+    architecture: Any, source: Path, entity_federation: Any
+) -> SystemModel:
     """Lower a ``pycps_sysml2`` architecture to the system-plane model."""
 
     system = _part_definition(architecture, SYSTEM_DEF)
@@ -727,33 +782,73 @@ def parse_architecture(architecture: Any, source: Path) -> SystemModel:
         if parts[name].type_name != expected:
             raise ModelError(f"{where}.{name}: expected type {expected}, found {parts[name].type_name!r}")
 
-    multiplicities = _multiplicities(source)
-    if "instances" not in multiplicities:
+    # The entity plane's Federation is authoritative for participant identity
+    # and order. One system-plane part per participant, typed by the same def.
+    entity_parts = list(
+        (pycps_sysml2.effective_members(architecture, entity_federation).parts or {}).items()
+    )
+    if not entity_parts:
+        raise ModelError(f"part def {entity_federation.name}: declares no participants")
+    entity_names = [name for name, _usage in entity_parts]
+    entity_types: dict[str, str] = {}
+    participants: list[tuple[str, Any]] = []
+    for name, usage in entity_parts:
+        definition = _part_definition(architecture, usage.type_name)
+        entity_types[name] = architecture.stored_key(definition)
+        participants.append((name, definition))
+
+    for name in entity_names:
+        if name not in parts:
+            raise ModelError(
+                f"{where}: missing participant part {name!r}; the entity plane's "
+                f"{entity_federation.name} declares it"
+            )
+
+    participant_keys = set(entity_types.values())
+    declared_instances: list[str] = []
+    for name, usage in parts.items():
+        if name in RESERVED_PARTS:
+            continue
+        if name not in entity_types:
+            try:
+                definition = _part_definition(architecture, usage.type_name)
+            except ModelError:
+                continue
+            if architecture.stored_key(definition) not in participant_keys:
+                continue
+        declared_instances.append(name)
+    if declared_instances != entity_names:
         raise ModelError(
-            f"{source}: part 'instances' needs an occurrence count, e.g. 'part instances : AircraftInstance [4]'"
-        )
-    declared_type, instance_count = multiplicities["instances"]
-    if declared_type != parts["instances"].type_name:
-        raise ModelError(
-            f"{source}: 'instances' is typed {parts['instances'].type_name!r} but the multiplicity "
-            f"line names {declared_type!r}"
+            f"{where}: participant parts are declared as {declared_instances}; the entity "
+            f"plane's {entity_federation.name} declares them as {entity_names} (order is "
+            f"authoritative)"
         )
 
-    instance_type = _part_definition(architecture, parts["instances"].type_name)
-    if "telemetry" not in (instance_type.ports or {}):
-        raise ModelError(f"part def {instance_type.name}: missing port 'telemetry'")
-    for port in (instance_type.ports or {}).values():
-        # Externality is structural: a port declared on the AircraftInstance
-        # wrapper is the process boundary. Resolve the type so a missing or
-        # unknown port def is still rejected; no authored flag is required.
-        _port_definition(architecture, port.type_name)
+    instances: list[Instance] = []
+    for order, (name, usage) in enumerate(entity_parts):
+        actual = _part_definition(architecture, parts[name].type_name)
+        if architecture.stored_key(actual) != entity_types[name]:
+            raise ModelError(
+                f"{where}.{name}: typed {architecture.stored_key(actual)!r} but the entity "
+                f"plane's {entity_federation.name} declares {entity_types[name]!r}"
+            )
+        members = pycps_sysml2.effective_members(architecture, actual)
+        telemetry = (members.ports or {}).get("telemetry")
+        if telemetry is None:
+            raise ModelError(f"part def {actual.name}: missing port 'telemetry'")
+        # Externality is structural: `telemetry` on the participant is the
+        # process boundary. Resolve the type so an unknown port def is rejected.
+        _port_definition(architecture, telemetry.type_name)
+        instances.append(
+            Instance(name=name, participant=entity_types[name], order=order)
+        )
 
     processes = tuple(
-        _parse_process(architecture, name, process_usage)
-        for name, process_usage in parts.items()
-        if name not in RESERVED_PARTS
+        _parse_process(architecture, name, usage)
+        for name, usage in parts.items()
+        if name not in RESERVED_PARTS and name not in entity_types
     )
-    flows = _parse_flows(architecture, system, multiplicities)
+    flows = _parse_flows(architecture, system, entity_names)
     entity_model = _typed(attributes, "entity_model", "String", where)
     return SystemModel(
         schema=SCHEMA_VERSION,
@@ -768,11 +863,12 @@ def parse_architecture(architecture: Any, source: Path) -> SystemModel:
         architecture=_typed(attributes, "architecture", "String", where),
         scenario_binding=_typed(attributes, "scenario_binding", "String", where),
         scenario_mapping=_typed(attributes, "scenario_mapping", "String", where),
-        instance_count=instance_count,
-        aircraft=_parse_aircraft(architecture, parts["instances"]),
+        instance_count=len(instances),
+        aircraft=_parse_aircraft(architecture, participants),
         processes=processes,
         flows=flows,
         artifacts=_parse_artifacts(_part_definition(architecture, parts["artifacts"].type_name)),
+        instances=tuple(instances),
         rpr_contract=_rpr_contract(architecture),
     )
 
@@ -785,40 +881,66 @@ def _load_architecture(path: Path) -> Any:
 
 
 def load_model(path: Path | str = DEFAULT_MODEL) -> SystemModel:
-    """Parse the system plane and merge the architecture it imports."""
+    """Parse the system plane and merge the architectures it imports."""
 
     source = Path(path)
     primary = _load_architecture(source)
-    system = _part_definition(primary, SYSTEM_DEF)
-    architecture = _typed(
-        _attributes(system), "architecture", "String", f"part def {SYSTEM_DEF}"
-    )
+    attributes = _attributes(_part_definition(primary, SYSTEM_DEF))
+    where = f"part def {SYSTEM_DEF}"
+    architecture = _typed(attributes, "architecture", "String", where)
+    entity_model = _typed(attributes, "entity_model", "String", where)
     imported = REPO_ROOT / architecture
     if not imported.is_file():
         raise ModelError(
             f"architecture {architecture!r} does not exist; the system plane imports it"
         )
+    entity_path = REPO_ROOT / entity_model
+    if not entity_path.is_file():
+        raise ModelError(
+            f"entity model {entity_model!r} does not exist; the system plane imports it"
+        )
     imported_architecture = _load_architecture(imported)
+    entity_architecture = _load_architecture(entity_path)
     # The SoS vocabulary is an included root, not a copy: the system plane
-    # imports PysosSoS::* and the checker supplies the shipped definitions.
-    includes: list[Path] = [imported, pysos_sysml.sos_definitions()]
+    # imports PysosSoS::* and the checker supplies the shipped definitions. The
+    # entity plane imports PysspCore, and the entity file itself is a root so
+    # its participant defs and order can be referenced by type.
+    includes: list[Path] = [
+        imported,
+        pysos_sysml.sos_definitions(),
+        pyssp_sysml_definitions.core_definitions(),
+    ]
     # The aircraft architecture imports the RPR entity dialect. pycps_sysml2
     # resolves imports across the roots it is given, so supply the bundled
     # definition as well instead of restating it in the system plane.
-    if "RprEntity" in set(imported_architecture.imports) | set(primary.imports):
+    if (
+        "RprEntity"
+        in set(imported_architecture.imports) | set(primary.imports) | set(entity_architecture.imports)
+    ):
         try:
             import pyfmi_rpr
         except ImportError as exc:  # pragma: no cover - depends on the install
             raise ModelError(f"RprEntity is imported but pyfmi_rpr is unavailable: {exc}") from exc
         includes.append(pyfmi_rpr.rpr_entity())
+    includes.append(entity_path)
     merged = _load_architecture([*includes, source])
     package = imported_architecture.package_name
-    if package not in merged.imports:
+    # Check the system plane's own imports: `merged.imports` is architecture
+    # wide, and the entity plane imports Aircraft too, so the union would hide
+    # a missing import in the file that must name the dependency.
+    if package not in primary.imports:
         raise ModelError(
             f"{source}: the architecture declares package {package!r}, but the system plane "
             f"does not import it; add 'private import {package}::*;'"
         )
-    return parse_architecture(merged, source)
+    entity_package = entity_architecture.package_name
+    if entity_package not in primary.imports:
+        raise ModelError(
+            f"{source}: the entity model declares package {entity_package!r}, but the system "
+            f"plane does not import it; add 'private import {entity_package}::*;'"
+        )
+    entity_federation = _part_definition(merged, f"{entity_package}::Federation")
+    return parse_architecture(merged, source, entity_federation)
 
 
 # --------------------------------------------------------------------------- #
@@ -892,6 +1014,15 @@ def _resolve_reference(
         return [], f"{reference!r} names no instance or host process"
     if len(parts) == 2:
         component, port_name = parts
+        instance = instances.get(component)
+        if instance is not None:
+            ports = _instance_ports(instance)
+            if port_name in ports:
+                return [Resolved(reference, component, "instance", ports[port_name])], None
+            return (
+                [],
+                f"{reference!r}: instance {component!r} declares no {port_name!r} endpoint",
+            )
         process = processes.get(component)
         if process is None:
             return [], f"{reference!r} names no host process {component!r}"
@@ -967,13 +1098,25 @@ def _check_manifest(manifest: Mapping[str, Any], model: SystemModel) -> list[str
     if manifest.get("schema") != SCHEMA_VERSION:
         problems.append(f"manifest.schema {manifest.get('schema')!r} != {SCHEMA_VERSION}")
     instances = manifest.get("instances") or []
+    expected_order = [instance.name for instance in model.instances]
     if not instances:
         problems.append("manifest.instances: the federation has no instances")
-    elif len(instances) != model.instance_count:
-        problems.append(
-            f"manifest.instances has {len(instances)} entr(ies) but the model declares "
-            f"part instances : {model.instance_count}"
-        )
+    else:
+        if len(instances) != model.instance_count:
+            problems.append(
+                f"manifest.instances has {len(instances)} entr(ies) but the model declares "
+                f"{model.instance_count} participant part(s)"
+            )
+        declared_order = [
+            str(instance.get("name"))
+            for instance in instances
+            if isinstance(instance, Mapping)
+        ]
+        if declared_order != expected_order:
+            problems.append(
+                f"manifest.instances order {declared_order} != model participant order "
+                f"{expected_order}"
+            )
     for instance in instances:
         if not isinstance(instance, Mapping):
             problems.append("manifest.instances: expected objects")
@@ -1314,6 +1457,19 @@ def _check_entity_model(
 
     occurrences = _entity_occurrences(federation)
     instances = _instances(manifest)
+    entity_order = list(occurrences)
+    system_order = [instance.name for instance in model.instances]
+    if entity_order != system_order:
+        problems.append(
+            f"entity model {model.entity_model!r}: participant order {entity_order} != "
+            f"system-plane participant order {system_order}"
+        )
+    manifest_order = list(instances)
+    if entity_order != manifest_order:
+        problems.append(
+            f"entity model {model.entity_model!r}: participant order {entity_order} != "
+            f"manifest instance order {manifest_order}"
+        )
     for name in sorted(set(occurrences) - set(instances)):
         problems.append(f"entity {name}: declared but absent from the manifest")
     listener = _system_listener_port(model)
@@ -1632,6 +1788,7 @@ def _check_flows(
 
     covered_sources: set[str] = set()
     covered_targets: set[str] = set()
+    marker_protocols: dict[str, str] = {}
     for flow in model.flows:
         resolved, contract_problems = _flow_contract(model, flow, manifest, federation)
         problems += contract_problems
@@ -1641,6 +1798,13 @@ def _check_flows(
             problems.append(f"flows.{flow.name}.encoding: expected one of {sorted(ENCODINGS)}")
         if resolved.rate_hz is not None and resolved.rate_hz <= 0.0:
             problems.append(f"flows.{flow.name}.rate_hz: must be > 0")
+        if (
+            flow.protocol is None
+            and flow.encoding is None
+            and flow.rate_hz is None
+            and resolved.protocol is not None
+        ):
+            marker_protocols[flow.name] = resolved.protocol
         sources, source_problem = _resolve_reference(flow.source, instances, processes)
         if source_problem:
             problems.append(f"flows.{flow.name}.from: {source_problem}")
@@ -1649,6 +1813,12 @@ def _check_flows(
             problems.append(f"flows.{flow.name}.to: {target_problem}")
         covered_sources.update(item.label for item in sources)
         covered_targets.update(item.label for item in targets)
+
+    # Each marker flow now has one source, so protocol agreement is checked
+    # across the whole fan-in, not inside a single flow's source list.
+    marker_values = set(marker_protocols.values())
+    if len(marker_values) > 1:
+        problems.append(f"flows: marker sources disagree on protocol: {sorted(marker_values)}")
 
     for name, instance in instances.items():
         for endpoint_name, port in _instance_ports(instance).items():
