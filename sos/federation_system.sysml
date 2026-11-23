@@ -18,24 +18,19 @@
 package FederationSystem {
   private import Aircraft::*;
   private import PysosSoS::*;
+  private import RprEntity::*;
 
-  // -- interfaces: the flow contract lives on the port type ---------------
+  // -- interfaces: role markers, not fact carriers ------------------------
   // The aircraft broadcasts RPR entity-state packets: one outbound edge per
-  // instance, addressed to the recorder on UDP 5505. `external` marks the
-  // process boundary, so the artifact check must not look for it in the SSD.
-  port def RprBroadcast {
-    attribute protocol : String = "udp";
-    attribute encoding : String = "rpr";
-    attribute rate_hz : Real = 10.0;
-    attribute external : Boolean = true;
-  }
+  // instance, addressed to the recorder. Transport lives in the entity plane's
+  // transport sets, the wire version in RprEntity::RprContract, cadence in
+  // Timing, and the listener endpoint on Orchestrator. `sos_model.py` derives
+  // the flow contract from those owners and fails on disagreement.
+  // A port usage on the AircraftInstance wrapper is the process boundary, so
+  // externality is structural and nothing is authored here.
+  port def RprBroadcast;
 
-  port def RprListener {
-    attribute udp_port : Integer = 5505;
-    attribute protocol : String = "udp";
-    attribute encoding : String = "rpr";
-    attribute rate_hz : Real = 10.0;
-  }
+  port def RprListener;
 
   // -- shared frame --------------------------------------------------------
   part def FrameOrigin {
@@ -81,6 +76,8 @@ package FederationSystem {
   // stream.
   part def Orchestrator :> Application {
     port rpr_in : RprListener;
+    attribute rprHost : String = "127.0.0.1";
+    attribute rprPort : Integer = 5505;
     attribute roles : String = "supervisor,recorder";
     attribute cwd : String = ".";
     attribute command : String = "python scripts/run_e2e_rpr.py --manifest manifests/aircraft_federation.manifest.json --scenario 3rd_party/airplane/resources/scenarios/test_scenario.json --run-dir build/runs/sos4 --realtime";

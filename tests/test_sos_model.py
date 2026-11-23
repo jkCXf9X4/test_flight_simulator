@@ -6,6 +6,7 @@ import copy
 import json
 import zipfile
 from dataclasses import replace
+from functools import lru_cache
 from pathlib import Path
 
 import entity_manifest
@@ -34,8 +35,26 @@ def _instance(manifest: dict, name: str) -> dict:
     raise KeyError(name)
 
 
-def _command_flags(argv: list[str], flag: str) -> list[str]:
-    return [argv[index + 1] for index, token in enumerate(argv[:-1]) if token == flag]
+@lru_cache(maxsize=1)
+def _federation():
+    return entity_manifest.load_entity_model(REPO_ROOT / _model().entity_model)
+
+
+def _entity(federation, name: str):
+    for instance in federation.instances:
+        if instance.name == name:
+            return instance
+    raise KeyError(name)
+
+
+def _with_entity(federation, name: str, **changes):
+    return replace(
+        federation,
+        instances=[
+            replace(instance, **changes) if instance.name == name else instance
+            for instance in federation.instances
+        ],
+    )
 
 
 def test_model_and_manifest_are_complete():
@@ -44,37 +63,38 @@ def test_model_and_manifest_are_complete():
 
 
 def test_every_instance_is_paced_and_bounded():
-    manifest = _manifest()
-    argv = _instance(manifest, "red_striker")["command"]
-    argv.remove("--realtime")
-    argv[argv.index("--stop-time") + 1] = "30"
+    model = _model()
+    timing = replace(model.timing, realtime=False, stop_time_s=30.0)
 
-    problems = sos_model.check(manifest, _model())
+    problems = sos_model.check(_manifest(), replace(model, timing=timing))
 
-    assert any("red_striker: --realtime is False" in item for item in problems)
-    assert any("red_striker: --stop-time 30.0 != timing.stop_time_s 120.0" in item for item in problems)
+    assert any("red_striker: --realtime is present but timing.realtime is False" in item for item in problems)
+    assert any("red_striker: experiment.stopTime 120.0 != timing.stop_time_s 30.0" in item for item in problems)
 
 
 def test_every_instance_declares_its_frame_and_placement():
-    manifest = _manifest()
-    argv = _instance(manifest, "blue_cas")["command"]
-    argv.remove("--waypoint-frame")
-    argv.remove("federation")
-    argv.remove("--offset-east-km")
-    argv.remove("10")
+    model = _model()
+    blue = _entity(_federation(), "blue_cas")
+    scenario = {
+        key: value
+        for key, value in blue.scenario_values.items()
+        if key not in ("initX_km", "initY_km")
+    }
+    federation = _with_entity(_federation(), "blue_cas", waypoint_frame=None, scenario_values=scenario)
 
-    problems = sos_model.check(manifest, _model())
+    problems = sos_model._check_frame(_manifest(), model, REPO_ROOT, federation)
 
-    assert any("blue_cas: --waypoint-frame is missing" in item for item in problems)
-    assert any("blue_cas: placement offsets are missing" in item for item in problems)
+    assert any("blue_cas: waypoint_frame None != 'federation'" in item for item in problems)
+    assert any("blue_cas: placement is missing" in item for item in problems)
 
 
 def test_duplicate_placement_is_reported():
-    manifest = _manifest()
-    argv = _instance(manifest, "blue_baseline")["command"]
-    argv[argv.index("--offset-east-km") + 1] = "5"
+    model = _model()
+    blue = _entity(_federation(), "blue_baseline")
+    scenario = {**blue.scenario_values, "initY_km": 5.0}
+    federation = _with_entity(_federation(), "blue_baseline", scenario_values=scenario)
 
-    problems = sos_model.check(manifest, _model())
+    problems = sos_model._check_frame(_manifest(), model, REPO_ROOT, federation)
 
     assert any("placement (0.0, 5.0) collides with red_striker" in item for item in problems)
 
@@ -106,8 +126,109 @@ def test_control_is_not_modelled():
     model = _model()
 
     assert all("control" not in process.ports for process in model.processes)
-    assert [flow.encoding for flow in model.flows] == ["rpr"]
-    assert model.flows[0].target == "orchestrator/rpr_in"
+    resolved, problems = sos_model._flow_contract(
+        model, model.flows[0], _manifest(), _federation()
+    )
+    assert problems == []
+    assert resolved.protocol == "udp"
+    assert resolved.encoding == "rpr"
+    assert resolved.rate_hz == pytest.approx(10.0)
+    assert resolved.target == "orchestrator/rpr_in"
+
+
+def test_marker_ports_are_accepted_without_an_external_flag():
+    model = _model()
+
+    assert model.flows[0].protocol is None
+    assert model.flows[0].encoding is None
+    assert model.flows[0].rate_hz is None
+    assert model.process("orchestrator").ports["rpr_in"] == 5505
+    assert sos_model.check(_manifest(), model) == []
+
+
+def test_marker_listener_without_rprPort_is_rejected(tmp_path):
+    source = tmp_path / "federation_system.sysml"
+    source.write_text(
+        MODEL_PATH.read_text(encoding="utf-8").replace(
+            '    attribute rprPort : Integer = 5505;\n', ""
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(sos_model.ModelError, match="rprPort"):
+        sos_model.load_model(source)
+
+
+def test_flow_protocol_is_derived_from_each_source_transport():
+    model = _model()
+    blue = _entity(_federation(), "blue_cas")
+    transport = {**blue.transport_values, "transport": "loopback"}
+    federation = _with_entity(_federation(), "blue_cas", transport_values=transport)
+
+    problems = sos_model._check_flows(_manifest(), model, federation)
+
+    assert any(
+        "flows.rpr_broadcast.protocol: blue_cas transport 'loopback'" in item
+        for item in problems
+    )
+    assert any("flows.rpr_broadcast.protocol: sources disagree" in item for item in problems)
+
+
+def test_flow_encoding_is_derived_from_the_imported_rpr_contract():
+    model = _model()
+    flow = model.flows[0]
+
+    drifted = replace(model, rpr_contract="json.v1")
+    resolved, problems = sos_model._flow_contract(drifted, flow, _manifest(), _federation())
+    assert resolved.encoding is None
+    assert any("RprEntity::RprContract.version 'json.v1'" in item for item in problems)
+
+    missing = replace(model, rpr_contract=None)
+    _resolved, problems = sos_model._flow_contract(missing, flow, _manifest(), _federation())
+    assert any("RprEntity::RprContract.version is missing" in item for item in problems)
+
+    newer = replace(model, rpr_contract="rpr.v3")
+    resolved, problems = sos_model._flow_contract(newer, flow, _manifest(), _federation())
+    assert problems == []
+    assert resolved.encoding == "rpr"
+
+
+def test_flow_rate_is_derived_from_timing():
+    model = _model()
+    flow = model.flows[0]
+
+    faster = replace(model, timing=replace(model.timing, step_size_s=0.05))
+    resolved, problems = sos_model._flow_contract(faster, flow, _manifest(), _federation())
+    assert problems == []
+    assert resolved.rate_hz == pytest.approx(20.0)
+
+    stalled = replace(model, timing=replace(model.timing, step_size_s=0.0))
+    _resolved, problems = sos_model._flow_contract(stalled, flow, _manifest(), _federation())
+    assert any(
+        "flows.rpr_broadcast.rate_hz: Timing.step_size_s 0.0 must be > 0" in item
+        for item in problems
+    )
+
+
+def test_four_fan_in_sources_share_one_listener_without_a_collision():
+    model = _model()
+    manifest = _manifest()
+    processes = {process.name: process for process in model.processes}
+    instances = sos_model._instances(manifest)
+
+    sources, source_problem = sos_model._resolve_reference(
+        model.flows[0].source, instances, processes
+    )
+    targets, target_problem = sos_model._resolve_reference(
+        model.flows[0].target, instances, processes
+    )
+
+    assert source_problem is None
+    assert target_problem is None
+    assert len(sources) == model.instance_count == 4
+    assert [target.label for target in targets] == ["orchestrator/rpr_in"]
+    assert sos_model._check_ports(manifest, model) == []
+    assert sos_model._check_flows(manifest, model, _federation()) == []
 
 
 def test_viewer_replays_the_recorder_truth_stream():
@@ -125,14 +246,13 @@ def test_viewer_replays_the_recorder_truth_stream():
     assert any("processes.viewer: --path" in item for item in problems)
 
 
-def test_identity_args_must_match_the_manifest():
+def test_identity_set_must_match_the_manifest():
     manifest = _manifest()
-    argv = _instance(manifest, "blue_cas")["command"]
-    argv[argv.index("--marking") + 1] = "RED-9"
+    _instance(manifest, "blue_cas")["entities"][0]["marking"] = "RED-9"
 
     problems = sos_model.check(manifest, _model())
 
-    assert any("blue_cas: --marking 'RED-9' != manifest entity marking 'BLUE-1'" in item for item in problems)
+    assert any("blue_cas: entity marking 'BLUE-1' != manifest marking 'RED-9'" in item for item in problems)
 
 
 def test_federation_and_timing_must_match_the_manifest():
@@ -157,11 +277,114 @@ def test_frame_origin_must_match_the_reference_scenario():
     assert any("frame.origin.latitude_deg -3.5" in item for item in problems)
 
 
+def test_frame_origin_drift_reaches_the_entity_identity_set():
+    model = _model()
+    origin = replace(model.frame.origin, latitude_deg=-3.5)
+
+    problems = sos_model.check(
+        _manifest(), replace(model, frame=replace(model.frame, origin=origin))
+    )
+
+    assert any(
+        "blue_cas: identity.reference_latitude_deg -2.957519 != frame.origin.latitude_deg -3.5"
+        in item
+        for item in problems
+    )
+
+
+def test_transport_bind_must_match_the_telemetry_endpoint():
+    manifest = _manifest()
+    _instance(manifest, "blue_cas")["telemetry"][0]["port"] = 5599
+
+    problems = sos_model.check(manifest, _model())
+
+    assert any(
+        "blue_cas: transport.bind_address 127.0.0.1:5514 != manifest telemetry 127.0.0.1:5599"
+        in item
+        for item in problems
+    )
+
+
+def test_identity_set_marking_drift_is_reported():
+    model = _model()
+    blue = _entity(_federation(), "blue_cas")
+    identity = {**blue.identity_values, "marking_characters": "WRONG"}
+    federation = _with_entity(_federation(), "blue_cas", identity_values=identity)
+
+    problems = sos_model._check_identity(_manifest(), model, REPO_ROOT, federation)
+
+    assert any("blue_cas: entity marking 'WRONG' != manifest marking 'BLUE-1'" in item for item in problems)
+
+
+def test_variant_must_be_named_in_the_application_command():
+    model = _model()
+    blue = _entity(_federation(), "blue_cas")
+    application = {
+        **blue.application_values,
+        "command": blue.application_values["command"].replace(" --variant BlueCas", ""),
+    }
+    federation = _with_entity(_federation(), "blue_cas", application_values=application)
+
+    problems = sos_model._check_identity(_manifest(), model, REPO_ROOT, federation)
+
+    assert any("blue_cas: application command is missing --variant" in item for item in problems)
+
+
+def test_scenario_name_must_match_the_application():
+    manifest = _manifest()
+    _instance(manifest, "blue_cas")["env"]["PYSOS_SCENARIO"] = "wrong_scenario"
+
+    problems = sos_model._check_identity(manifest, _model(), REPO_ROOT, _federation())
+
+    assert any(
+        "blue_cas: env.PYSOS_SCENARIO 'wrong_scenario' != "
+        "application scenario 'cas_multi_store_support'" in item
+        for item in problems
+    )
+
+
+def test_missing_scenario_name_is_reported():
+    manifest = _manifest()
+    del _instance(manifest, "blue_cas")["env"]["PYSOS_SCENARIO"]
+
+    problems = sos_model._check_identity(manifest, _model(), REPO_ROOT, _federation())
+
+    assert any("blue_cas: env.PYSOS_SCENARIO is missing" in item for item in problems)
+
+
+def test_application_scenario_metadata_is_required():
+    model = _model()
+    blue = _entity(_federation(), "blue_cas")
+    application = {
+        key: value for key, value in blue.application_values.items() if key != "scenario"
+    }
+    federation = _with_entity(_federation(), "blue_cas", application_values=application)
+
+    problems = sos_model._check_identity(_manifest(), model, REPO_ROOT, federation)
+
+    assert any("blue_cas: application scenario is missing" in item for item in problems)
+
+
 def test_system_plane_is_authored_in_sysml_v2():
     assert MODEL_PATH.suffix == ".sysml"
+    text = MODEL_PATH.read_text(encoding="utf-8")
+    assert "port def RprBroadcast;" in text
+    assert "port def RprListener;" in text
+    assert 'attribute rprPort : Integer = 5505;' in text
+
     model = _model()
     assert (REPO_ROOT / model.entity_model).is_file()
     assert model.instance_count == len(_manifest()["instances"])
+    assert model.process("orchestrator").ports["rpr_in"] == 5505
+
+    resolved, problems = sos_model._flow_contract(
+        model, model.flows[0], _manifest(), _federation()
+    )
+    assert problems == []
+    assert resolved.protocol == "udp"
+    assert resolved.encoding == "rpr"
+    assert resolved.rate_hz == pytest.approx(10.0)
+    assert resolved.target == "orchestrator/rpr_in"
 
 
 def test_entity_plane_composes_the_imported_aircraft():
@@ -346,18 +569,23 @@ def test_system_plane_imports_the_airplane_architecture():
     assert "part def UdpBridge" not in model_text
     assert "part def Pilot" not in model_text
     assert "ControlInterface" not in model_text
-    assert "encoding : String = \"rpr\"" in model_text
+    assert "private import RprEntity::*;" in model_text
+    assert "port def RprBroadcast;" in model_text
 
 
 def test_missing_reference_origin_is_reported():
-    manifest = _manifest()
-    argv = _instance(manifest, "blue_cas")["command"]
-    index = argv.index("--reference-longitude-deg")
-    del argv[index:index + 2]
+    model = _model()
+    blue = _entity(_federation(), "blue_cas")
+    identity = {
+        key: value
+        for key, value in blue.identity_values.items()
+        if key != "reference_longitude_deg"
+    }
+    federation = _with_entity(_federation(), "blue_cas", identity_values=identity)
 
-    problems = sos_model.check(manifest, _model())
+    problems = sos_model._check_frame(_manifest(), model, REPO_ROOT, federation)
 
-    assert any("blue_cas: --reference-longitude-deg is missing" in item for item in problems)
+    assert any("blue_cas: identity.reference_longitude_deg is missing" in item for item in problems)
 
 
 @requires_built_aircraft

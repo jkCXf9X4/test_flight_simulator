@@ -35,6 +35,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=str(DEFAULT_SCENARIO),
         help="Scenario JSON to copy into the local build/ssp bundle.",
     )
+    parser.add_argument(
+        "--skip-variant-export",
+        action="store_true",
+        help="Do not export the per-variant aircraft SSPs after the local bundle refresh.",
+    )
     return parser.parse_args(argv)
 
 
@@ -96,6 +101,8 @@ def main(argv: list[str] | None = None) -> int:
         [python_bin, "scripts/prepare_local_bundle.py", "--scenario", str(scenario_path)],
         cwd=REPO_ROOT,
     )
+    if not args.skip_variant_export:
+        run_step([python_bin, "scripts/export_aircraft_variants.py"], cwd=REPO_ROOT)
     return 0
 
 

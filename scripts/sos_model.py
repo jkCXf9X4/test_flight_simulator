@@ -6,10 +6,12 @@ accepts the whole federation today:
 
 * the **entity plane** is ``sos/aircraft_federation.sysml``, lowered by
   ``pysos_sysml`` to the ``pysos_coordinate`` manifest (schema 1): process
-  ``command``/``cwd``/``env``, per-instance UDP endpoints, entity identity,
-  the scenario name and the shared ``PysosSoS::LaunchSpec`` contract. It
-  imports the real ``Aircraft`` architecture, so every ``AircraftEntity``
-  composes ``AircraftModel`` instead of restating it;
+  ``command``/``cwd``/``env``, per-instance UDP endpoints, entity identity and
+  the shared ``PysosSoS::LaunchSpec`` contract. The variant parameter sets
+  (scenario, identity, transport, experiment) and the application's
+  ``waypointFrame`` stay on the entity model, not in the manifest. It imports
+  the real ``Aircraft`` architecture, so every ``AircraftEntity`` composes
+  ``AircraftModel`` instead of restating it;
 * the **system plane** is ``sos/federation_system.sysml``: the shared frame, the
   federation timing contract, the host-side participants
   (orchestrator/recorder, viewer, builder), the RPR broadcast flow and the run
@@ -25,11 +27,12 @@ lowered to the ``instance/*`` wildcard. This module resolves that pattern
 against the lowered manifest and reports every fact that is missing or
 contradictory, so "the model is complete" is a checkable claim.
 
-``pysos_sysml`` lowers only a fixed attribute set, so per-instance run
-parameters ride in the manifest ``command`` argv; the checks below keep them
-present and consistent. The entity plane's typed facts (aircraft composition,
-launch contract, identity) are checked against the manifest and the system
-plane here, not duplicated in the manifest.
+``pysos_sysml`` exposes the variant/application parameter sets on the entity
+model while the manifest carries only the runnable command and lowered
+endpoints. The checks below read each fact at its owner instead of requiring it
+in ``command`` argv. The entity plane's typed facts (aircraft composition,
+launch contract, identity, frame, timing and transport) are checked against the
+manifest and the system plane here, not duplicated in the manifest.
 """
 
 from __future__ import annotations
@@ -43,7 +46,7 @@ import shlex
 import sys
 import zipfile
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -195,9 +198,9 @@ class Flow:
     name: str
     source: str
     target: str
-    protocol: str
-    encoding: str
-    rate_hz: float
+    protocol: str | None
+    encoding: str | None
+    rate_hz: float | None
 
 
 @dataclass(frozen=True)
@@ -225,6 +228,9 @@ class SystemModel:
     processes: tuple[Process, ...]
     flows: tuple[Flow, ...]
     artifacts: Artifacts
+    #: ``RprEntity::RprContract.version`` from the imported wire contract, if
+    #: the architecture provides one. Marker flows derive their encoding here.
+    rpr_contract: str | None = None
 
     def process(self, name: str) -> Process | None:
         for candidate in self.processes:
@@ -266,6 +272,32 @@ def _port_definition(architecture: Any, name: str) -> Any:
 
 def _attribute_definition(architecture: Any, name: str) -> Any:
     return _resolve_definition(architecture.attribute_definitions, name, "attribute definition")
+
+
+def _optional_attribute_definition(architecture: Any, name: str) -> Any | None:
+    """Resolve an attribute definition that a legacy model may not import."""
+
+    matches = [
+        key
+        for key in architecture.attribute_definitions
+        if key == name or key.endswith(f"::{name}")
+    ]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        raise ModelError(f"ambiguous attribute definition {name!r}; candidates: {sorted(matches)}")
+    return architecture.attribute_definitions[matches[0]]
+
+
+def _rpr_contract(architecture: Any) -> str | None:
+    """The imported ``RprEntity::RprContract.version``, or ``None`` if absent."""
+
+    definition = _optional_attribute_definition(architecture, "RprContract")
+    if definition is None:
+        return None
+    return _typed(
+        _attributes(definition), "version", "String", f"attribute def {definition.name}"
+    )
 
 
 def _attributes(definition: Any) -> dict[str, tuple[str, Any]]:
@@ -386,9 +418,21 @@ def _port_number(architecture: Any, type_name: str, port_name: str, where: str) 
     return number
 
 
-def _port_contract(architecture: Any, type_name: str, where: str) -> tuple[str, str, float]:
+def _port_contract(
+    architecture: Any, type_name: str, where: str
+) -> tuple[str | None, str | None, float | None]:
+    """The authored contract on a port type, or ``None`` for a role marker.
+
+    A marker port def carries no attributes at all. Its facts are owned by the
+    entity transport set, ``RprEntity::RprContract``, ``Timing`` and the
+    orchestrator; ``_check_flows`` derives them. Explicit attributes keep
+    working for legacy models.
+    """
+
     attributes = _attributes(_port_definition(architecture, type_name))
     where = f"port def {type_name}"
+    if not attributes:
+        return None, None, None
     protocol = _typed(attributes, "protocol", "String", where)
     encoding = _typed(attributes, "encoding", "String", where)
     rate_hz = float(_typed(attributes, "rate_hz", "Real", where))
@@ -517,10 +561,24 @@ def _parse_process(architecture: Any, name: str, usage: Any) -> Process:
     command = tuple(shlex.split(_typed(attributes, "command", "String", where)))
     if not command:
         raise ModelError(f"{where}.command: empty command line")
-    ports = {
-        port_name: _port_number(architecture, port.type_name, port_name, where)
-        for port_name, port in members.ports.items()
-    }
+    ports: dict[str, int | None] = {}
+    for port_name, port in members.ports.items():
+        port_definition = _port_definition(architecture, port.type_name)
+        if _attributes(port_definition):
+            ports[port_name] = _port_number(architecture, port.type_name, port_name, where)
+        elif port_name == "rpr_in":
+            # The marker owns no endpoint; the host application does.
+            if "rprPort" not in attributes:
+                raise ModelError(
+                    f"{where}.{port_name}: port def {port.type_name!r} is a marker; "
+                    f"declare 'attribute rprPort : Integer' on the process"
+                )
+            number = int(_typed(attributes, "rprPort", "Integer", where))
+            if not 1 <= number <= 65535:
+                raise ModelError(f"{where}.rprPort: port {number} out of range")
+            ports[port_name] = number
+        else:
+            ports[port_name] = None
     return Process(
         name=name,
         roles=tuple(roles),
@@ -684,12 +742,11 @@ def parse_architecture(architecture: Any, source: Path) -> SystemModel:
     instance_type = _part_definition(architecture, parts["instances"].type_name)
     if "telemetry" not in (instance_type.ports or {}):
         raise ModelError(f"part def {instance_type.name}: missing port 'telemetry'")
-    for port_name, port in (instance_type.ports or {}).items():
-        external = _attributes(_port_definition(architecture, port.type_name)).get("external")
-        if external is None or external[1] is not True:
-            raise ModelError(
-                f"part def {instance_type.name}: port {port_name!r} must be declared external"
-            )
+    for port in (instance_type.ports or {}).values():
+        # Externality is structural: a port declared on the AircraftInstance
+        # wrapper is the process boundary. Resolve the type so a missing or
+        # unknown port def is still rejected; no authored flag is required.
+        _port_definition(architecture, port.type_name)
 
     processes = tuple(
         _parse_process(architecture, name, process_usage)
@@ -716,6 +773,7 @@ def parse_architecture(architecture: Any, source: Path) -> SystemModel:
         processes=processes,
         flows=flows,
         artifacts=_parse_artifacts(_part_definition(architecture, parts["artifacts"].type_name)),
+        rpr_contract=_rpr_contract(architecture),
     )
 
 
@@ -931,16 +989,53 @@ def _check_manifest(manifest: Mapping[str, Any], model: SystemModel) -> list[str
             problems.append(
                 f"{name}: expected exactly one telemetry endpoint, found {len(telemetry)}"
             )
-        # Control is retired. The SysML lowerer (pysos_sysml) still emits one
-        # placeholder control endpoint because its subset requires controlPort;
-        # accept at most one so a real second control channel is still caught.
+        # Control is retired: the participant plane owns telemetry only and the
+        # lowerer emits no control endpoint.
         control = instance.get("control") or []
-        if len(control) > 1:
+        if control:
             problems.append(f"{name}: expected no control endpoints, found {len(control)}")
     return problems
 
 
-def _check_timing(manifest: Mapping[str, Any], model: SystemModel) -> list[str]:
+def _entity_occurrences(federation: Any | None) -> dict[str, tuple[Any, int, Any]]:
+    """Map manifest names to ``(instance, occurrence index, entity)`` pairs."""
+
+    occurrences: dict[str, tuple[Any, int, Any]] = {}
+    if federation is None:
+        return occurrences
+    for instance in federation.instances:
+        for index in range(instance.count):
+            name = instance.name if instance.count == 1 else f"{instance.name}_{index + 1}"
+            occurrences[name] = (instance, index, instance.entities[index])
+    return occurrences
+
+
+def _load_entity_federation(
+    model: SystemModel, repo_root: Path
+) -> tuple[Any | None, list[str]]:
+    path = repo_root / model.entity_model
+    if not path.is_file():
+        return None, [f"entity model {model.entity_model!r} does not exist"]
+    try:
+        return entity_manifest.load_entity_model(path), []
+    except (OSError, ValueError) as exc:  # SysMLError is a ValueError
+        return None, [f"entity model {model.entity_model!r}: {exc}"]
+
+
+def _host_port(value: Any) -> tuple[str, int] | None:
+    host, separator, port_text = str(value).rpartition(":")
+    if not separator or not host:
+        return None
+    try:
+        port = int(port_text)
+    except ValueError:
+        return None
+    return (host, port) if 1 <= port <= 65535 else None
+
+
+def _check_timing(
+    manifest: Mapping[str, Any], model: SystemModel, federation: Any | None = None
+) -> list[str]:
     problems: list[str] = []
     timing = model.timing
     if _integer_ratio(timing.stop_time_s, timing.step_size_s) is None:
@@ -955,31 +1050,35 @@ def _check_timing(manifest: Mapping[str, Any], model: SystemModel) -> list[str]:
         )
     if timing.fanin_watchdog_s <= timing.sample_period_s:
         problems.append("timing.fanin_watchdog_s must exceed timing.sample_period_s")
+    occurrences = _entity_occurrences(federation)
     for instance in _instances(manifest).values():
         name = instance.get("name")
         argv = _argv(instance)
-        realtime = "--realtime" in argv
-        if realtime != timing.realtime:
+        if "--realtime" in argv and not timing.realtime:
             problems.append(
-                f"{name}: --realtime is {realtime} but timing.realtime is {timing.realtime}"
+                f"{name}: --realtime is present but timing.realtime is {timing.realtime}"
             )
-        stop = _flag(argv, "--stop-time")
-        if stop is None:
-            problems.append(f"{name}: --stop-time is missing; the run duration is not modelled")
-        else:
+        occurrence = occurrences.get(str(name))
+        if occurrence is None:
+            continue
+        values = occurrence[0].experiment_values
+        for key, declared in (
+            ("stopTime", timing.stop_time_s),
+            ("stepSize", timing.step_size_s),
+        ):
+            if key not in values:
+                continue
             try:
-                value = float(stop)
-            except ValueError:
-                problems.append(f"{name}: --stop-time {stop!r} is not a number")
-            else:
-                if not _close(value, timing.stop_time_s):
-                    problems.append(
-                        f"{name}: --stop-time {value} != timing.stop_time_s {timing.stop_time_s}"
-                    )
-        for unsupported in ("--step-size", "--timestep"):
-            if unsupported in argv:
+                value = float(values[key])
+            except (TypeError, ValueError):
                 problems.append(
-                    f"{name}: {unsupported} is not consumed downstream; declare it under timing"
+                    f"{name}: experiment.{key} {values[key]!r} is not a number"
+                )
+                continue
+            if not _close(value, declared):
+                problems.append(
+                    f"{name}: experiment.{key} {value} != timing."
+                    f"{'stop_time_s' if key == 'stopTime' else 'step_size_s'} {declared}"
                 )
     return problems
 
@@ -993,7 +1092,12 @@ def _frame_reference(model: SystemModel, repo_root: Path) -> tuple[Path | None, 
     return (path if path.is_file() else None), index
 
 
-def _check_frame(manifest: Mapping[str, Any], model: SystemModel, repo_root: Path) -> list[str]:
+def _check_frame(
+    manifest: Mapping[str, Any],
+    model: SystemModel,
+    repo_root: Path,
+    federation: Any | None = None,
+) -> list[str]:
     problems: list[str] = []
     origin = model.frame.origin
     if not -90.0 <= origin.latitude_deg <= 90.0:
@@ -1025,119 +1129,180 @@ def _check_frame(manifest: Mapping[str, Any], model: SystemModel, repo_root: Pat
                         f"frame.origin.{key} {declared} != {scenario_path.name} points[{point_index}].{key}"
                     )
 
+    expected_placements = {
+        "red_interceptor": (0.0, 0.0),
+        "red_striker": (0.0, 5.0),
+        "blue_cas": (0.0, 10.0),
+        "blue_baseline": (0.0, 15.0),
+    }
     placements: dict[tuple[float, float], str] = {}
-    for instance in _instances(manifest).values():
-        name = instance.get("name")
-        argv = _argv(instance)
-        waypoint_frame = _flag(argv, "--waypoint-frame")
-        if waypoint_frame is None:
+    for name, (instance, _index, _entity) in _entity_occurrences(federation).items():
+        if instance.waypoint_frame != "federation":
             problems.append(
-                f"{name}: --waypoint-frame is missing; the frame policy {model.frame.waypoint_frame!r} "
-                f"is not enforced"
+                f"{name}: waypoint_frame {instance.waypoint_frame!r} != 'federation'"
             )
-        elif waypoint_frame != model.frame.waypoint_frame:
+        elif instance.waypoint_frame != model.frame.waypoint_frame:
             problems.append(
-                f"{name}: --waypoint-frame {waypoint_frame!r} != {model.frame.waypoint_frame!r}"
+                f"{name}: waypoint_frame {instance.waypoint_frame!r} != "
+                f"{model.frame.waypoint_frame!r}"
             )
-        for key, flag in (
-            ("latitude_deg", "--reference-latitude-deg"),
-            ("longitude_deg", "--reference-longitude-deg"),
-            ("altitude_m", "--reference-altitude-m"),
+        for key, identity_key in (
+            ("latitude_deg", "reference_latitude_deg"),
+            ("longitude_deg", "reference_longitude_deg"),
+            ("altitude_m", "reference_altitude_m"),
         ):
             declared = getattr(origin, key)
-            text = _flag(argv, flag)
-            if text is None:
+            if identity_key not in instance.identity_values:
                 problems.append(
-                    f"{name}: {flag} is missing; the wire origin does not match the federation frame"
+                    f"{name}: identity.{identity_key} is missing; the wire origin does not "
+                    f"match the federation frame"
                 )
                 continue
             try:
-                value = float(text)
-            except ValueError:
-                problems.append(f"{name}: {flag} {text!r} is not a number")
+                value = float(instance.identity_values[identity_key])
+            except (TypeError, ValueError):
+                problems.append(
+                    f"{name}: identity.{identity_key} {instance.identity_values[identity_key]!r} "
+                    f"is not a number"
+                )
                 continue
             if not _close(value, declared, 1e-9):
                 problems.append(
-                    f"{name}: {flag} {value} != frame.origin.{key} {declared}"
+                    f"{name}: identity.{identity_key} {value} != frame.origin.{key} {declared}"
                 )
-        north_text = _flag(argv, "--offset-north-km")
-        east_text = _flag(argv, "--offset-east-km")
-        if north_text is None or east_text is None:
-            problems.append(f"{name}: placement offsets are missing; the entity position is implicit")
+        scenario = instance.scenario_values
+        if "initX_km" not in scenario or "initY_km" not in scenario:
+            problems.append(f"{name}: placement is missing; scenario initX_km/initY_km are absent")
             continue
         try:
-            placement = (round(float(north_text), 6), round(float(east_text), 6))
-        except ValueError:
-            problems.append(f"{name}: placement offsets are not numbers")
+            placement = (round(float(scenario["initX_km"]), 6), round(float(scenario["initY_km"]), 6))
+        except (TypeError, ValueError):
+            problems.append(f"{name}: placement is not numeric")
             continue
+        expected = expected_placements.get(name)
+        if expected is not None and placement != expected:
+            problems.append(f"{name}: placement {placement} != expected {expected}")
         if placement in placements:
             problems.append(
                 f"{name}: placement {placement} collides with {placements[placement]}"
             )
-        placements[placement] = str(name)
+        placements[placement] = name
     return problems
 
 
-def _check_identity(manifest: Mapping[str, Any], model: SystemModel, repo_root: Path) -> list[str]:
+def _check_identity(
+    manifest: Mapping[str, Any],
+    model: SystemModel,
+    repo_root: Path,
+    federation: Any | None = None,
+) -> list[str]:
     problems: list[str] = []
+    occurrences = _entity_occurrences(federation)
     slugs: dict[str, str] = {}
     markings: dict[str, str] = {}
-    scenarios_dir = repo_root / model.scenarios_dir
-    for instance in _instances(manifest).values():
-        name = str(instance.get("name"))
-        entity = (instance.get("entities") or [{}])[0]
-        slug = _entity_slug(entity)
+    for name, instance in _instances(manifest).items():
+        declared = (instance.get("entities") or [{}])[0]
+        slug = _entity_slug(declared)
         if slug in slugs:
             problems.append(f"{name}: entity {slug} already used by {slugs[slug]}")
         slugs[slug] = name
-        marking = str(entity.get("marking") or "")
+        marking = str(declared.get("marking") or "")
         if marking:
             if marking in markings:
                 problems.append(f"{name}: marking {marking!r} already used by {markings[marking]}")
             markings[marking] = name
         else:
             problems.append(f"{name}: entity has no marking")
-        argv = _argv(instance)
-        for flag, key in (
-            ("--entity-site", "site"),
-            ("--entity-application", "application"),
-            ("--entity", "entity"),
-            ("--marking", "marking"),
+        occurrence = occurrences.get(name)
+        if occurrence is not None:
+            identity = occurrence[0].identity_values
+            for key, identity_key in (
+                ("site", "entity_site"),
+                ("application", "entity_application"),
+                ("entity", "entity_entity"),
+                ("marking", "marking_characters"),
+            ):
+                if identity_key not in identity:
+                    problems.append(
+                        f"{name}: identity.{identity_key} is missing; the RPR identity is not wired"
+                    )
+                    continue
+                actual = str(identity[identity_key])
+                expected = str(declared.get(key) or "")
+                if actual != expected:
+                    problems.append(
+                        f"{name}: entity {key} {actual!r} != manifest {key} {expected!r}"
+                    )
+            tokens: list[str] = []
+            try:
+                tokens = shlex.split(
+                    str(occurrence[0].application_values.get("command") or "")
+                )
+            except ValueError:
+                problems.append(
+                    f"{name}: application command is not a valid command line"
+                )
+            variant = tokens[tokens.index("--variant") + 1] if "--variant" in tokens[:-1] else ""
+            if "--variant" not in tokens:
+                problems.append(
+                    f"{name}: application command is missing --variant; the runnable variant "
+                    f"is not named"
+                )
+            elif not variant:
+                problems.append(f"{name}: application --variant is empty")
+        env = instance.get("env") or {}
+        if "PYSOS_TELEMETRY_PORT" not in env:
+            problems.append(f"{name}: env.PYSOS_TELEMETRY_PORT is missing")
+        telemetry = instance.get("telemetry") or []
+        if (
+            telemetry
+            and isinstance(telemetry[0], Mapping)
+            and str(env.get("PYSOS_TELEMETRY_PORT")) != str(telemetry[0].get("port"))
         ):
-            declared = _flag(argv, flag)
-            expected = str(entity.get(key) or "")
-            if declared is None:
-                problems.append(f"{name}: {flag} is missing; the RPR identity is not wired")
-            elif declared != expected:
-                problems.append(f"{name}: {flag} {declared!r} != manifest entity {key} {expected!r}")
-        scenario = (instance.get("env") or {}).get("PYSOS_SCENARIO")
-        if not scenario:
-            problems.append(f"{name}: env.PYSOS_SCENARIO is missing")
-        elif not (scenarios_dir / f"{scenario}.json").is_file():
-            problems.append(f"{name}: scenario {scenario!r} not found under {model.scenarios_dir}")
+            problems.append(
+                f"{name}: env.PYSOS_TELEMETRY_PORT {env.get('PYSOS_TELEMETRY_PORT')!r} != "
+                f"manifest telemetry port {telemetry[0].get('port')!r}"
+            )
+        if "PYSOS_SCENARIO" not in env:
+            problems.append(
+                f"{name}: env.PYSOS_SCENARIO is missing; the scenario name is "
+                f"application metadata"
+            )
+        elif occurrence is not None:
+            declared_scenario = occurrence[0].application_values.get("scenario")
+            if declared_scenario is None:
+                problems.append(
+                    f"{name}: application scenario is missing; the descriptive "
+                    f"scenario name is not authored"
+                )
+            elif str(env["PYSOS_SCENARIO"]) != str(declared_scenario):
+                problems.append(
+                    f"{name}: env.PYSOS_SCENARIO {env['PYSOS_SCENARIO']!r} != "
+                    f"application scenario {declared_scenario!r}"
+                )
     return problems
 
 
+def _system_listener_port(model: SystemModel) -> int | None:
+    for process in model.processes:
+        if "rpr_in" in process.ports:
+            return process.ports["rpr_in"]
+    return None
+
+
 def _check_entity_model(
-    manifest: Mapping[str, Any], model: SystemModel, repo_root: Path
+    manifest: Mapping[str, Any], model: SystemModel, federation: Any | None
 ) -> list[str]:
     """Prove the entity plane composes the same aircraft and agrees with the manifest."""
-    path = repo_root / model.entity_model
-    if not path.is_file():
-        return [f"entity model {model.entity_model!r} does not exist"]
-    try:
-        federation = entity_manifest.load_entity_model(path)
-    except (OSError, ValueError) as exc:  # SysMLError is a ValueError
-        return [f"entity model {model.entity_model!r}: {exc}"]
-
     problems: list[str] = []
+    if federation is None:
+        return problems
     if federation.name != model.federation:
         problems.append(
             f"entity model {model.entity_model!r}: package {federation.name!r} "
             f"!= federation {model.federation!r}"
         )
 
-    occurrences: dict[str, tuple[Any, Any]] = {}
     for instance in federation.instances:
         if instance.aircraft != model.aircraft.key:
             problems.append(
@@ -1146,32 +1311,109 @@ def _check_entity_model(
             )
         if instance.launch is None:
             problems.append(f"entity {instance.name}: missing LaunchSpec")
-        for index in range(instance.count):
-            name = instance.name if instance.count == 1 else f"{instance.name}_{index + 1}"
-            occurrences[name] = (instance, instance.entities[index])
 
+    occurrences = _entity_occurrences(federation)
     instances = _instances(manifest)
     for name in sorted(set(occurrences) - set(instances)):
         problems.append(f"entity {name}: declared but absent from the manifest")
+    listener = _system_listener_port(model)
     for name, instance in instances.items():
         if name not in occurrences:
             problems.append(f"{name}: manifest instance has no entity-plane declaration")
             continue
-        entity_instance, entity = occurrences[name]
+        entity_instance, index, _entity = occurrences[name]
         declared = (instance.get("entities") or [{}])[0]
-        for key in ("site", "application", "entity", "marking"):
-            actual = str(getattr(entity, key))
+        identity = entity_instance.identity_values
+        for key, identity_key in (
+            ("site", "entity_site"),
+            ("application", "entity_application"),
+            ("entity", "entity_entity"),
+            ("marking", "marking_characters"),
+        ):
+            if identity_key not in identity:
+                problems.append(
+                    f"{name}: identity.{identity_key} is missing; the RPR identity is not wired"
+                )
+                continue
+            actual = str(identity[identity_key])
             expected = str(declared.get(key) or "")
             if actual != expected:
                 problems.append(
                     f"{name}: entity {key} {actual!r} != manifest {key} {expected!r}"
                 )
-        env = instance.get("env") or {}
-        if entity_instance.scenario != env.get("PYSOS_SCENARIO"):
+
+        entity_endpoint = (
+            entity_instance.telemetry_ports[index]
+            if index < len(entity_instance.telemetry_ports)
+            else None
+        )
+        if len(entity_instance.telemetry_ports) != entity_instance.count:
             problems.append(
-                f"{name}: scenario {entity_instance.scenario!r} != "
-                f"manifest env.PYSOS_SCENARIO {env.get('PYSOS_SCENARIO')!r}"
+                f"{name}: entity plane declares {len(entity_instance.telemetry_ports)} "
+                f"telemetry endpoint(s) for {entity_instance.count} occurrence(s); expected one each"
             )
+        if entity_endpoint is None:
+            problems.append(f"{name}: entity plane declares no telemetry endpoint")
+        if entity_instance.control_ports:
+            problems.append(
+                f"{name}: entity plane declares {len(entity_instance.control_ports)} "
+                f"control endpoint(s); expected none"
+            )
+        transport = entity_instance.transport_values
+        if transport.get("transport") != "udp":
+            problems.append(
+                f"{name}: transport {transport.get('transport')!r} != 'udp'"
+            )
+        if "bind_address" not in transport:
+            problems.append(f"{name}: transport.bind_address is missing; the RPR bind is not wired")
+        else:
+            bind = _host_port(transport["bind_address"])
+            if bind is None:
+                problems.append(
+                    f"{name}: transport.bind_address {transport['bind_address']!r} is not "
+                    f"'host:port'"
+                )
+            else:
+                if entity_endpoint is not None and bind != (
+                    entity_endpoint.host,
+                    entity_endpoint.port,
+                ):
+                    problems.append(
+                        f"{name}: transport.bind_address {bind[0]}:{bind[1]} != "
+                        f"entity telemetry {entity_endpoint.host}:{entity_endpoint.port}"
+                    )
+                telemetry = instance.get("telemetry") or []
+                if len(telemetry) == 1 and isinstance(telemetry[0], Mapping):
+                    endpoint_host = str(telemetry[0].get("host") or "")
+                    endpoint_port = _as_int_port(telemetry[0].get("port"))
+                    if (endpoint_host, endpoint_port) != bind:
+                        problems.append(
+                            f"{name}: transport.bind_address {bind[0]}:{bind[1]} != "
+                            f"manifest telemetry {endpoint_host}:{endpoint_port}"
+                        )
+        if "peer_address" not in transport:
+            problems.append(
+                f"{name}: transport.peer_address is missing; the listener is not wired"
+            )
+        else:
+            peer = _host_port(transport["peer_address"])
+            if peer is None:
+                problems.append(
+                    f"{name}: transport.peer_address {transport['peer_address']!r} is not "
+                    f"'host:port'"
+                )
+            elif listener is None:
+                problems.append(
+                    f"{name}: transport.peer_address {peer[0]}:{peer[1]} names no system "
+                    f"listener port (rpr_in)"
+                )
+            elif peer[1] != listener:
+                problems.append(
+                    f"{name}: transport.peer_address port {peer[1]} != system listener port "
+                    f"{listener}"
+                )
+
+        env = instance.get("env") or {}
         launch = entity_instance.launch
         if launch is None:
             continue
@@ -1244,7 +1486,142 @@ def _check_ports(manifest: Mapping[str, Any], model: SystemModel) -> list[str]:
     return problems
 
 
-def _check_flows(manifest: Mapping[str, Any], model: SystemModel) -> list[str]:
+def _flow_contract(
+    model: SystemModel,
+    flow: Flow,
+    manifest: Mapping[str, Any],
+    federation: Any | None,
+) -> tuple[Flow, list[str]]:
+    """Fill a marker flow's contract from its real owners.
+
+    A flow whose source port def is a marker carries no authored contract.
+    Transport comes from each source instance's entity-plane transport set,
+    the wire version from the imported ``RprEntity::RprContract``, cadence from
+    ``Timing``, and the listener from the orchestrator. Problems are reported
+    here; a legacy flow with explicit attributes is returned untouched.
+    """
+
+    if flow.protocol is not None or flow.encoding is not None or flow.rate_hz is not None:
+        return flow, []
+
+    problems: list[str] = []
+    instances = _instances(manifest)
+    processes = {process.name: process for process in model.processes}
+    occurrences = _entity_occurrences(federation)
+    sources, _source_problem = _resolve_reference(flow.source, instances, processes)
+
+    protocols: dict[str, str] = {}
+    for source in sources:
+        if source.scope != "instance":
+            problems.append(
+                f"flows.{flow.name}.protocol: source {source.label!r} is not an instance"
+            )
+            continue
+        occurrence = occurrences.get(source.component)
+        if occurrence is None:
+            problems.append(
+                f"flows.{flow.name}.protocol: instance {source.component!r} has no "
+                f"entity-plane transport"
+            )
+            continue
+        transport = occurrence[0].transport_values
+        if "transport" not in transport:
+            problems.append(
+                f"flows.{flow.name}.protocol: {source.component}.transport is missing"
+            )
+        else:
+            protocols[source.component] = str(transport["transport"])
+
+        bind = transport.get("bind_address")
+        if bind is None:
+            problems.append(
+                f"flows.{flow.name}.{source.component}: transport.bind_address is missing"
+            )
+        else:
+            endpoint = _host_port(bind)
+            telemetry = instances.get(source.component, {}).get("telemetry") or []
+            manifest_endpoint = None
+            if len(telemetry) == 1 and isinstance(telemetry[0], Mapping):
+                manifest_endpoint = (
+                    str(telemetry[0].get("host") or ""),
+                    _as_int_port(telemetry[0].get("port")),
+                )
+            if endpoint is None:
+                problems.append(
+                    f"flows.{flow.name}.{source.component}: transport.bind_address "
+                    f"{bind!r} is not 'host:port'"
+                )
+            elif endpoint != manifest_endpoint:
+                problems.append(
+                    f"flows.{flow.name}.{source.component}: transport.bind_address "
+                    f"{endpoint[0]}:{endpoint[1]} != manifest telemetry "
+                    f"{manifest_endpoint[0] if manifest_endpoint else None}:"
+                    f"{manifest_endpoint[1] if manifest_endpoint else None}"
+                )
+
+    for name, protocol in sorted(protocols.items()):
+        if protocol not in PROTOCOLS:
+            problems.append(
+                f"flows.{flow.name}.protocol: {name} transport {protocol!r} is not one of "
+                f"{sorted(PROTOCOLS)}"
+            )
+    values = set(protocols.values())
+    if len(values) > 1:
+        problems.append(f"flows.{flow.name}.protocol: sources disagree: {sorted(values)}")
+    protocol = next(iter(values)) if len(values) == 1 else None
+
+    step = model.timing.step_size_s
+    if step <= 0.0:
+        problems.append(
+            f"flows.{flow.name}.rate_hz: Timing.step_size_s {step} must be > 0"
+        )
+        rate_hz = None
+    else:
+        rate_hz = 1.0 / step
+
+    version = model.rpr_contract
+    if not version:
+        problems.append(
+            f"flows.{flow.name}.encoding: RprEntity::RprContract.version is missing; "
+            f"the wire version is not imported"
+        )
+        encoding = None
+    elif not re.fullmatch(r"rpr\..+", version):
+        problems.append(
+            f"flows.{flow.name}.encoding: RprEntity::RprContract.version {version!r} "
+            f"is not an 'rpr.*' version"
+        )
+        encoding = None
+    else:
+        encoding = "rpr"
+
+    targets, _target_problem = _resolve_reference(flow.target, instances, processes)
+    orchestrator = processes.get("orchestrator")
+    declared = orchestrator.ports.get("rpr_in") if orchestrator is not None else None
+    if len(targets) == 1:
+        target = targets[0]
+        if target.label != "orchestrator/rpr_in":
+            problems.append(
+                f"flows.{flow.name}.to: marker flow must target orchestrator/rpr_in, "
+                f"found {target.label!r}"
+            )
+        elif target.port is None or declared is None or target.port != declared:
+            problems.append(
+                f"flows.{flow.name}.to: target port {target.port} != "
+                f"Orchestrator.rprPort {declared}"
+            )
+    elif targets:
+        problems.append(
+            f"flows.{flow.name}.to: marker flow must target one listener, found "
+            f"{[item.label for item in targets]}"
+        )
+
+    return replace(flow, protocol=protocol, encoding=encoding, rate_hz=rate_hz), problems
+
+
+def _check_flows(
+    manifest: Mapping[str, Any], model: SystemModel, federation: Any | None = None
+) -> list[str]:
     problems: list[str] = []
     instances = _instances(manifest)
     processes = {process.name: process for process in model.processes}
@@ -1256,11 +1633,13 @@ def _check_flows(manifest: Mapping[str, Any], model: SystemModel) -> list[str]:
     covered_sources: set[str] = set()
     covered_targets: set[str] = set()
     for flow in model.flows:
-        if flow.protocol not in PROTOCOLS:
+        resolved, contract_problems = _flow_contract(model, flow, manifest, federation)
+        problems += contract_problems
+        if resolved.protocol is not None and resolved.protocol not in PROTOCOLS:
             problems.append(f"flows.{flow.name}.protocol: expected one of {sorted(PROTOCOLS)}")
-        if flow.encoding not in ENCODINGS:
+        if resolved.encoding is not None and resolved.encoding not in ENCODINGS:
             problems.append(f"flows.{flow.name}.encoding: expected one of {sorted(ENCODINGS)}")
-        if flow.rate_hz <= 0.0:
+        if resolved.rate_hz is not None and resolved.rate_hz <= 0.0:
             problems.append(f"flows.{flow.name}.rate_hz: must be > 0")
         sources, source_problem = _resolve_reference(flow.source, instances, processes)
         if source_problem:
@@ -1644,13 +2023,15 @@ def check(
     """
 
     problems: list[str] = []
+    federation, entity_problems = _load_entity_federation(model, repo_root)
     problems += _check_manifest(manifest, model)
-    problems += _check_entity_model(manifest, model, repo_root)
-    problems += _check_timing(manifest, model)
-    problems += _check_frame(manifest, model, repo_root)
-    problems += _check_identity(manifest, model, repo_root)
+    problems += entity_problems
+    problems += _check_entity_model(manifest, model, federation)
+    problems += _check_timing(manifest, model, federation)
+    problems += _check_frame(manifest, model, repo_root, federation)
+    problems += _check_identity(manifest, model, repo_root, federation)
     problems += _check_ports(manifest, model)
-    problems += _check_flows(manifest, model)
+    problems += _check_flows(manifest, model, federation)
     problems += _check_processes(manifest, model)
     problems += _check_launch_graph(model)
     problems += _check_source_ssp(manifest, model)

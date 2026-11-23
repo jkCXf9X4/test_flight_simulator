@@ -5,34 +5,8 @@
         "python",
         "scripts/run_instance_process.py",
         "--realtime",
-        "--stop-time",
-        "120",
-        "--offset-north-km",
-        "0",
-        "--offset-east-km",
-        "0",
-        "--waypoint-frame",
-        "federation",
-        "--reference-latitude-deg",
-        "-2.957519",
-        "--reference-longitude-deg",
-        "39.232955",
-        "--reference-altitude-m",
-        "0",
-        "--entity-site",
-        "1",
-        "--entity-application",
-        "1",
-        "--entity",
-        "1",
-        "--marking",
-        "RED-1"
-      ],
-      "control": [
-        {
-          "host": "127.0.0.1",
-          "port": 5511
-        }
+        "--variant",
+        "RedInterceptor"
       ],
       "cwd": ".",
       "entities": [
@@ -45,7 +19,6 @@
       ],
       "env": {
         "PYSOS_AFTER_PROCESS": "supervisor",
-        "PYSOS_CONTROL_PORT": "5511",
         "PYSOS_LAUNCH_MODE": "supervised",
         "PYSOS_LAUNCH_ORDER": "2",
         "PYSOS_READINESS": "port_bound",
@@ -66,34 +39,8 @@
         "python",
         "scripts/run_instance_process.py",
         "--realtime",
-        "--stop-time",
-        "120",
-        "--offset-north-km",
-        "0",
-        "--offset-east-km",
-        "5",
-        "--waypoint-frame",
-        "federation",
-        "--reference-latitude-deg",
-        "-2.957519",
-        "--reference-longitude-deg",
-        "39.232955",
-        "--reference-altitude-m",
-        "0",
-        "--entity-site",
-        "1",
-        "--entity-application",
-        "1",
-        "--entity",
-        "2",
-        "--marking",
-        "RED-2"
-      ],
-      "control": [
-        {
-          "host": "127.0.0.1",
-          "port": 5513
-        }
+        "--variant",
+        "RedStriker"
       ],
       "cwd": ".",
       "entities": [
@@ -106,7 +53,6 @@
       ],
       "env": {
         "PYSOS_AFTER_PROCESS": "supervisor",
-        "PYSOS_CONTROL_PORT": "5513",
         "PYSOS_LAUNCH_MODE": "supervised",
         "PYSOS_LAUNCH_ORDER": "2",
         "PYSOS_READINESS": "port_bound",
@@ -127,34 +73,8 @@
         "python",
         "scripts/run_instance_process.py",
         "--realtime",
-        "--stop-time",
-        "120",
-        "--offset-north-km",
-        "0",
-        "--offset-east-km",
-        "10",
-        "--waypoint-frame",
-        "federation",
-        "--reference-latitude-deg",
-        "-2.957519",
-        "--reference-longitude-deg",
-        "39.232955",
-        "--reference-altitude-m",
-        "0",
-        "--entity-site",
-        "1",
-        "--entity-application",
-        "1",
-        "--entity",
-        "3",
-        "--marking",
-        "BLUE-1"
-      ],
-      "control": [
-        {
-          "host": "127.0.0.1",
-          "port": 5515
-        }
+        "--variant",
+        "BlueCas"
       ],
       "cwd": ".",
       "entities": [
@@ -167,7 +87,6 @@
       ],
       "env": {
         "PYSOS_AFTER_PROCESS": "supervisor",
-        "PYSOS_CONTROL_PORT": "5515",
         "PYSOS_LAUNCH_MODE": "supervised",
         "PYSOS_LAUNCH_ORDER": "2",
         "PYSOS_READINESS": "port_bound",
@@ -188,34 +107,8 @@
         "python",
         "scripts/run_instance_process.py",
         "--realtime",
-        "--stop-time",
-        "120",
-        "--offset-north-km",
-        "0",
-        "--offset-east-km",
-        "15",
-        "--waypoint-frame",
-        "federation",
-        "--reference-latitude-deg",
-        "-2.957519",
-        "--reference-longitude-deg",
-        "39.232955",
-        "--reference-altitude-m",
-        "0",
-        "--entity-site",
-        "1",
-        "--entity-application",
-        "1",
-        "--entity",
-        "4",
-        "--marking",
-        "BLUE-2"
-      ],
-      "control": [
-        {
-          "host": "127.0.0.1",
-          "port": 5517
-        }
+        "--variant",
+        "BlueBaseline"
       ],
       "cwd": ".",
       "entities": [
@@ -228,7 +121,6 @@
       ],
       "env": {
         "PYSOS_AFTER_PROCESS": "supervisor",
-        "PYSOS_CONTROL_PORT": "5517",
         "PYSOS_LAUNCH_MODE": "supervised",
         "PYSOS_LAUNCH_ORDER": "2",
         "PYSOS_READINESS": "port_bound",

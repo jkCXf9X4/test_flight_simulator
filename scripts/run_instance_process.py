@@ -63,6 +63,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--instance", type=int, default=None, help="1-based instance index (or derive it from PYSOS_TELEMETRY_PORT).")
     parser.add_argument("--source-ssp", type=Path, default=DEFAULT_SOURCE_SSP, help="Prepared source SSP archive.")
+    parser.add_argument("--variant", default=None, help="Per-variant SSP stem under the variant directory.")
+    parser.add_argument(
+        "--variant-dir",
+        type=Path,
+        default=None,
+        help="Directory holding variant SSPs (default: build/ssp/variants).",
+    )
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="Directory for instance bundles.")
     parser.add_argument("--telemetry-port", type=int, default=None, help="Per-instance RPR bind UDP port (overrides PYSOS_TELEMETRY_PORT).")
     parser.add_argument("--offset-north-km", type=float, default=None, help="Shift initX_km by this many kilometres.")
@@ -94,6 +101,12 @@ def main(argv: list[str] | None = None) -> int:
         if telemetry_env is None:
             raise SystemExit("--instance is required when PYSOS_TELEMETRY_PORT is unset")
         index = _instance_from_bind_port(telemetry_env)
+    if args.variant is None:
+        scenario = args.scenario or _env_scenario() or DEFAULT_SCENARIO
+    else:
+        # A variant archive owns its scenario parameter set, so a missing
+        # PYSOS_SCENARIO must not fall back to the baseline scenario.
+        scenario = args.scenario or _env_scenario()
     summary = prepare_instance(
         index,
         args.source_ssp,
@@ -102,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
         offset_north_km=args.offset_north_km,
         offset_east_km=args.offset_east_km,
         stop_time=args.stop_time,
-        scenario=args.scenario or _env_scenario() or DEFAULT_SCENARIO,
+        scenario=scenario,
         realtime=args.realtime,
         waypoint_frame=args.waypoint_frame,
         reference_latitude_deg=args.reference_latitude_deg,
@@ -112,6 +125,8 @@ def main(argv: list[str] | None = None) -> int:
         entity_application=args.entity_application if args.entity_application is not None else "1",
         entity=args.entity,
         marking=args.marking if args.marking is not None else "",
+        variant=args.variant,
+        variant_dir=args.variant_dir,
     )
     print(json.dumps(summary, sort_keys=True), flush=True)
 

@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Prepare one independent aircraft instance from the prepared local SSP bundle.
 
+With ``variant`` set, the per-variant archive under ``build/ssp/variants`` is
+already self-contained (its Scenario/Identity/Transport parameter sets and SSD
+mappings are inline), so this script copies that archive unchanged and writes
+only the per-instance ssp4sim config. The legacy path below remains for the
+baseline ``build/ssp/scenario.ssp``:
+
 The source SSP already binds ``resources/MissionScenario.ssv`` and
 ``resources/HighAltitudeIntercept.ssm`` in its ``SystemStructure.ssd``. This
 script rewrites those two archive members in a per-instance copy of the SSP:
@@ -31,6 +37,7 @@ from xml.etree import ElementTree as ET
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AIRPLANE_ROOT = REPO_ROOT / "3rd_party" / "airplane"
 DEFAULT_SOURCE_SSP = REPO_ROOT / "build" / "ssp" / "scenario.ssp"
+DEFAULT_VARIANT_DIR = REPO_ROOT / "build" / "ssp" / "variants"
 DEFAULT_OUT_DIR = REPO_ROOT / "build" / "ssp" / "instances"
 SCENARIO_DIR = AIRPLANE_ROOT / "resources" / "scenarios"
 DEFAULT_SCENARIO = "test_scenario"
@@ -352,6 +359,8 @@ def prepare_instance(
     entity_application: str = "1",
     entity: str | None = None,
     marking: str = "",
+    variant: str | None = None,
+    variant_dir: Path | None = None,
 ) -> dict[str, str]:
     """Write the per-instance SSP and config; return their paths and settings."""
 
@@ -372,13 +381,19 @@ def prepare_instance(
             f"{entity_site!r}/{entity_application!r}/{entity!r}"
         ) from None
 
-    source_ssp = source_ssp.resolve()
-    if not source_ssp.is_file():
-        raise SystemExit(f"Source SSP not found: {source_ssp}")
+    variant_ssp: Path | None = None
+    if variant is not None:
+        candidate = (variant_dir or DEFAULT_VARIANT_DIR) / f"{variant}.ssp"
+        variant_ssp = candidate.resolve()
+        if not variant_ssp.is_file():
+            raise SystemExit(f"Variant SSP not found: {variant_ssp}")
+    else:
+        source_ssp = source_ssp.resolve()
+        if not source_ssp.is_file():
+            raise SystemExit(f"Source SSP not found: {source_ssp}")
 
     instance_dir = out_dir.resolve() / f"instance-{index}"
     instance_dir.mkdir(parents=True, exist_ok=True)
-    dest_ssp = instance_dir / source_ssp.name
     config_path = instance_dir / "config.json"
     work_dir = (working_dir or instance_dir / "work").resolve()
     csv_file = (csv_path or instance_dir / "results" / "scenario_results.csv").resolve()
@@ -386,6 +401,46 @@ def prepare_instance(
     for directory in (work_dir, csv_file.parent, log_file.parent):
         directory.mkdir(parents=True, exist_ok=True)
 
+    if variant_ssp is not None:
+        # The variant archive is self-contained: copy it byte-for-byte and let
+        # its inline parameter sets carry scenario, identity and transport.
+        dest_ssp = instance_dir / variant_ssp.name
+        dest_ssp.write_bytes(variant_ssp.read_bytes())
+        resolved_stop_time = (
+            float(stop_time)
+            if stop_time is not None
+            else _resolve_stop_time(variant_ssp)
+        )
+        config = create_simulation_config(
+            ssp_path=dest_ssp,
+            result_file=csv_file,
+            stop_time=resolved_stop_time,
+            realtime=realtime,
+            recording_interval=0.25,
+        )
+        config["simulation"]["working_dir"] = str(work_dir)
+        config["simulation"]["recording"]["csv"]["file"] = str(csv_file)
+        config["simulation"]["log"]["file"] = str(log_file)
+        write_simulation_config(config=config, result_file=csv_file, config_path=config_path)
+
+        summary = {
+            "instance": str(index),
+            "ssp": str(dest_ssp),
+            "config": str(config_path),
+            "working_dir": str(work_dir),
+            "csv": str(csv_file),
+            "log": str(log_file),
+            "stop_time": f"{resolved_stop_time}",
+            "realtime": str(realtime).lower(),
+            "variant": variant,
+        }
+        if scenario is not None:
+            summary["scenario"] = scenario
+        if marking:
+            summary["marking"] = marking
+        return summary
+
+    dest_ssp = instance_dir / source_ssp.name
     resolved_stop_time = float(stop_time) if stop_time is not None else _resolve_stop_time(source_ssp)
 
     entries = _read_bundle(source_ssp)
@@ -505,6 +560,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--instance", type=int, required=True, help="1-based instance index.")
     parser.add_argument("--source-ssp", type=Path, default=DEFAULT_SOURCE_SSP, help="Prepared source SSP archive.")
+    parser.add_argument("--variant", default=None, help="Per-variant SSP stem under the variant directory.")
+    parser.add_argument(
+        "--variant-dir",
+        type=Path,
+        default=None,
+        help=f"Directory holding variant SSPs (default: {DEFAULT_VARIANT_DIR}).",
+    )
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="Directory for instance bundles.")
     parser.add_argument("--telemetry-port", type=int, default=None, help="Per-instance RPR bind UDP port.")
     parser.add_argument("--offset-north-km", type=float, default=None, help="Shift initX_km by this many kilometres.")
@@ -554,14 +616,19 @@ def main(argv: list[str] | None = None) -> int:
         marking=args.marking,
         scenario=args.scenario,
         realtime=args.realtime,
+        variant=args.variant,
+        variant_dir=args.variant_dir,
     )
     print(f"Wrote SSP {summary['ssp']}")
     print(f"Wrote config {summary['config']}")
-    print(
-        f"Instance {summary['instance']}: RPR bind {summary['rpr_bind_address']}, "
-        f"scenario {summary['scenario']}, init "
-        f"(north {summary['init_x_km']} km, east {summary['init_y_km']} km)"
-    )
+    if "variant" in summary:
+        print(f"Instance {summary['instance']}: variant {summary['variant']}")
+    else:
+        print(
+            f"Instance {summary['instance']}: RPR bind {summary['rpr_bind_address']}, "
+            f"scenario {summary['scenario']}, init "
+            f"(north {summary['init_x_km']} km, east {summary['init_y_km']} km)"
+        )
     return 0
 
 

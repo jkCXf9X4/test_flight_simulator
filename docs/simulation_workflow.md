@@ -151,23 +151,23 @@ stream, builder), the RPR broadcast flow and the run artifacts. `scripts/sos_mod
 run, and `scripts/sos_model.py --artifacts` after a build to prove the fresh
 SSPs still match the modelled aircraft; see `docs/sos_model.md`.
 
-Per-instance run parameters live in the manifest `command` argv because the
-`pysos_sysml` subset cannot type them: `--realtime`, `--stop-time`, the
-placement offsets, `--waypoint-frame federation`, the federation
-`--reference-latitude-deg/--reference-longitude-deg/--reference-altitude-m`,
-and the entity identity `--entity-site/--entity-application/--entity/--marking`.
-The frame flag rebases each scenario's waypoints into the federation frame, so
-four scenarios authored around four different geodetic origins still publish one
-consistent frame; the reference flags put that same origin in every RPR state
-packet and the identity flags name the entity on the wire. The aircraft composition itself is imported from
+Per-instance run parameters no longer ride in the manifest `command` argv.
+Each aircraft variant is a composition root with named Scenario/Identity/
+Transport `ParameterSet`s; `scripts/export_aircraft_variants.py` exports them to
+`build/ssp/variants/<Variant>.ssp` (eleven components, three parameter sets).
+The manifest command carries only process facts plus `--variant <Variant>`.
+Placement, frame origin, identity and stop time are bound in the variant sets;
+the aircraft composition itself is imported from
 `3rd_party/airplane/architecture/aircraft.sysml`, not restated.
 
 `scripts/run_instances.py` translates its CLI into a manifest and hands the
 validated spec to `pysos_coordinate.Federation`; the project keeps no process
 supervisor of its own. Per-instance preparation stays in
 `scripts/prepare_instance_bundle.py`, wired as the manifest `command` through
-`scripts/run_instance_process.py`: that wrapper prepares the bundle and then
-`exec`s the ssp4sim run, so the supervised process is the simulation itself.
+`scripts/run_instance_process.py`: `--variant` copies the pre-exported variant
+SSP byte-for-byte and writes only the ssp4sim config, then the wrapper `exec`s
+the run, so the supervised process is the simulation itself. The legacy
+baseline rewrite path remains for standalone airplane runs.
 
 ```bash
 $PY scripts/run_instances.py --dry-run           # validate, launch nothing
@@ -190,9 +190,9 @@ the project interpreter substituted for the portable `python3` in `command`.
 | RPR fan-in | **5505** | dedicated recorder port, never an instance port |
 
 The old `5501` plan is retired; it collided with RPR `5505` at instance 3.
-`PYSOS_CONTROL_PORT` and the per-instance control port remain only in the
-SysML-lowered manifest, because the current `pysos_sysml` loader requires
-`controlPort`; no aircraft consumes them.
+The manifest has no control endpoint and no `PYSOS_CONTROL_PORT`: the listener
+port is `Orchestrator.rprPort`, and each variant's transport set owns its bind
+address.
 
 | instance | RPR bind | init offset (north, east) |
 | --- | --- | --- |
@@ -202,37 +202,39 @@ SysML-lowered manifest, because the current `pysos_sysml` loader requires
 | 4 | 5516 | 0, +15 km |
 
 The default manifest runs `test_scenario` for both instances. The SoS manifest
-runs `high_altitude_intercept`, `deep_strike_penetration`,
-`cas_multi_store_support`, and `test_scenario` on instances 1-4 respectively.
+maps the four variants to `high_altitude_intercept`,
+`deep_strike_penetration`, `cas_multi_store_support`, and `test_scenario` on
+instances 1-4 respectively; those names are metadata in each application, while
+the values live in the variant sets.
 
 Each instance writes to `build/ssp/instances/instance-<N>/` when launched from
 the generated manifest (the e2e runner retargets this to its own run
-directory): its own SSP, `config.json`, `work/`, result CSV, and log. The
-federation origin is scenario `points[0]`; it is written into
-`rpr_state_source.reference_*` so every broadcast names the frame it uses.
+directory): its copied variant SSP, `config.json`, `work/`, result CSV, and log.
+The federation origin is the variant identity set's `reference_latitude_deg`,
+`reference_longitude_deg`, and `reference_altitude_m`, so every broadcast names
+the frame it uses.
 
-### Per-instance scenario flow
+### Per-variant scenario flow
 
-The scenario is selected per instance, never shared:
+The scenario is selected by the variant, not by rewriting a shared SSV:
 
-1. The SysML federation author writes `scenario = "<stem>"` on an instance in
-   `sos/aircraft_federation.sysml`.
-2. `scripts/entity_manifest.py` lowers that to the manifest
-   `env.PYSOS_SCENARIO` key (alongside `PYSOS_TELEMETRY_PORT`, the vestigial
-   `PYSOS_CONTROL_PORT`, and the `PYSOS_LAUNCH_MODE`/`PYSOS_READINESS`/
-   `PYSOS_LAUNCH_ORDER`/`PYSOS_AFTER_PROCESS` keys from the shared
-   `PysosSoS::LaunchSpec`).
-3. `scripts/run_instance_process.py` reads those variables (explicit CLI flags
-   still win, and the scenario defaults to `test_scenario` when the key is
-   absent). When `--instance` is omitted, it derives the 1-based index from
+1. The entity plane authors Scenario/Identity/Transport `ParameterSet`s on each
+   aircraft variant in `sos/aircraft_federation.sysml`.
+2. `scripts/export_aircraft_variants.py` exports each variant to
+   `build/ssp/variants/<Variant>.ssp`. The Scenario SSV carries
+   `waypointX/Y/Z_km[1..10]`, `waypointCount`, `targetAirspeed_mps`, and
+   `waypointProximity_km`; the SSD carries the inline mappings.
+3. `scripts/entity_manifest.py` lowers the application `scenario` name to
+   `env.PYSOS_SCENARIO` for labels, alongside `PYSOS_TELEMETRY_PORT` and the
+   `PYSOS_LAUNCH_MODE`/`PYSOS_READINESS`/`PYSOS_LAUNCH_ORDER`/
+   `PYSOS_AFTER_PROCESS` keys from the shared `PysosSoS::LaunchSpec`.
+4. `scripts/run_instance_process.py --variant` selects the archive. When
+   `--instance` is omitted, it derives the 1-based index from
    `PYSOS_TELEMETRY_PORT`.
-4. `scripts/prepare_instance_bundle.py` loads
-   `3rd_party/airplane/resources/scenarios/<scenario>.json`, converts it through
-   the airplane scenario library (`scripts/lib/scenarios/preparation.py`), and
-   rewrites the per-instance SSP's `resources/MissionScenario.ssv` members:
-   `waypointX_km[1..10]`, `waypointY_km[1..10]`, `waypointZ_km[1..10]`,
-   `waypointCount`, `targetAirspeed_mps`, and `waypointProximity_km`. The
-   existing `initX_km`/`initY_km` offsets and port rewrite stay unchanged.
+5. `scripts/prepare_instance_bundle.py --variant` copies the archive
+   byte-for-byte and writes the ssp4sim config. The legacy baseline path still
+   converts a JSON scenario and rewrites `resources/MissionScenario.ssv` for
+   standalone runs.
 
 Aircraft are peerless: every instance only broadcasts its own RPR state from
 its own bind port. No instance opens another instance's port or ingests another
