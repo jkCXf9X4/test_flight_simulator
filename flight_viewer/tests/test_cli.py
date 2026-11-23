@@ -8,6 +8,8 @@ from pathlib import Path
 from flight_viewer.cli import build_parser, main, resolve_exercise
 from flight_viewer.model import EntityKey, EntityState
 from flight_viewer.recorder import JsonlRecorder
+from pysos_interop import TruthRecorder
+from pysos_interop.geo import GeoOrigin
 
 
 def _states() -> list[EntityState]:
@@ -107,4 +109,33 @@ def test_jsonl_replay_stops_when_exhausted(tmp_path: Path) -> None:
 
     assert rc == 0
     assert elapsed < 5.0
+    assert rrd_path.stat().st_size > 0
+
+
+def test_recorder_truth_stream_replays_as_jsonl(tmp_path: Path) -> None:
+    """The viewer consumes the RPR recorder's truth.jsonl without a new source."""
+
+    truth_path = tmp_path / "truth.jsonl"
+    with TruthRecorder(truth_path, run_id="replay", origin=GeoOrigin()) as recorder:
+        for state in _states():
+            recorder.write(state)
+    rrd_path = tmp_path / "truth.rrd"
+
+    rc = main(
+        [
+            "--source",
+            "jsonl",
+            "--path",
+            str(truth_path),
+            "--sink",
+            "rerun",
+            "--rrd",
+            str(rrd_path),
+            "--count",
+            "2",
+        ]
+    )
+
+    assert rc == 0
+    assert rrd_path.exists()
     assert rrd_path.stat().st_size > 0

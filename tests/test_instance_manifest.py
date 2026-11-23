@@ -40,6 +40,7 @@ def test_top_level_keys_and_instance_shape():
             "startup_timeout",
         ]
         assert instance["cwd"] == "."
+        assert instance["control"] == []
         assert isinstance(instance["command"], list)
         assert all(isinstance(arg, str) for arg in instance["command"])
 
@@ -48,18 +49,16 @@ def test_ports_entities_and_separation_match_scenario():
     data = _manifest_json()
     first, second = data["instances"]
     assert first["telemetry"] == [{"host": "127.0.0.1", "port": 5510}]
-    assert first["control"] == [{"host": "127.0.0.1", "port": 5511}]
+    assert first["control"] == []
     assert second["telemetry"] == [{"host": "127.0.0.1", "port": 5512}]
-    assert second["control"] == [{"host": "127.0.0.1", "port": 5513}]
+    assert second["control"] == []
     assert first["env"] == {
         "PYSOS_SCENARIO": "test_scenario",
         "PYSOS_TELEMETRY_PORT": "5510",
-        "PYSOS_CONTROL_PORT": "5511",
     }
     assert second["env"] == {
         "PYSOS_SCENARIO": "test_scenario",
         "PYSOS_TELEMETRY_PORT": "5512",
-        "PYSOS_CONTROL_PORT": "5513",
     }
 
     assert first["entities"] == [{"site": "1", "application": "1", "entity": "1", "marking": ""}]
@@ -70,6 +69,21 @@ def test_ports_entities_and_separation_match_scenario():
     assert first_command[first_command.index("--offset-east-km") + 1] == "0.0"
     assert second_command[second_command.index("--offset-east-km") + 1] == "5.0"
     assert second_command[second_command.index("--offset-north-km") + 1] == "0.0"
+
+
+def test_identity_and_reference_args_match_the_manifest():
+    data = _manifest_json()
+    for index, instance in enumerate(data["instances"], start=1):
+        command = instance["command"]
+        entity = instance["entities"][0]
+        assert command[command.index("--entity-site") + 1] == entity["site"]
+        assert command[command.index("--entity-application") + 1] == entity["application"]
+        assert command[command.index("--entity") + 1] == str(index)
+        assert command[command.index("--marking") + 1] == entity["marking"]
+        assert command[command.index("--waypoint-frame") + 1] == "federation"
+        assert command[command.index("--reference-latitude-deg") + 1] == "-2.957519"
+        assert command[command.index("--reference-longitude-deg") + 1] == "39.232955"
+        assert command[command.index("--reference-altitude-m") + 1] == "0.0"
 
 
 def test_manifest_is_generated_not_hand_edited():
@@ -109,7 +123,7 @@ def test_single_instance_uses_first_port_and_no_offset():
     spec = instance_manifest.build_spec(instances=1)
     instance = spec.instances[0]
     assert [(endpoint.port) for endpoint in instance.telemetry] == [5510]
-    assert [(endpoint.port) for endpoint in instance.control] == [5511]
+    assert instance.control == []
     command = instance.command
     assert command[command.index("--offset-east-km") + 1] == "0.0"
 

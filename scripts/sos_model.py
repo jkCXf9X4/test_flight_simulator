@@ -10,11 +10,12 @@ accepts the whole federation today:
   the scenario name;
 * the **system plane** is ``sos/federation_system.sysml``: the shared frame, the
   federation timing contract, the host-side participants
-  (orchestrator/recorder, viewer, pilot), the flows and the run artifacts. This
-  module lowers it from the ``pycps_sysml2`` IR, which already carries port
-  definitions, port usages, connections and typed attribute values. The system
-  plane imports the aircraft architecture (package ``Aircraft``) instead of
-  restating it; the import target is named by the ``architecture`` attribute.
+  (orchestrator/recorder, viewer, builder), the RPR broadcast flow and the run
+  artifacts. This module lowers it from the ``pycps_sysml2`` IR, which already
+  carries port definitions, port usages, connections and typed attribute
+  values. The system plane imports the aircraft architecture (package
+  ``Aircraft``) and pyfmi_rpr's bundled ``RprEntity`` definition instead of
+  restating them; the import target is named by the ``architecture`` attribute.
 
 Authority is one-fact-one-place. The system plane never restates instance data:
 ``part instances : AircraftInstance [4]`` is one pattern, and connections to it are
@@ -52,7 +53,7 @@ DEFAULT_MANIFEST = REPO_ROOT / "manifests" / "aircraft_federation.manifest.json"
 
 SCHEMA_VERSION = 1
 SYSTEM_DEF = "SystemDescription"
-RESERVED_PARTS = ("origin", "timing", "overrides", "instances", "artifacts")
+RESERVED_PARTS = ("origin", "timing", "instances", "artifacts")
 TIMING_POLICIES = frozenset({"wall_clock"})
 TIMING_CLASSES = frozenset({"soft_realtime", "hard_realtime", "batch"})
 FRAME_MODES = frozenset({"federation"})
@@ -60,7 +61,7 @@ WAYPOINT_FRAMES = frozenset({"federation", "local"})
 PROTOCOLS = frozenset({"udp"})
 ENCODINGS = frozenset({"json-udp", "dis", "rpr", "none"})
 ROLES = frozenset({"supervisor", "recorder", "visualizer", "operator", "builder"})
-LAUNCHES = frozenset({"operator", "manual", "human"})
+LAUNCHES = frozenset({"operator", "manual"})
 REQUIRED_ARTIFACTS = ("truth", "measurements", "run")
 
 #: SSP/FMI namespaces and members the artifact check reads by name.
@@ -68,8 +69,8 @@ NS_SSD = "http://ssp-standard.org/SSP1/SystemStructureDescription"
 NS_SSV = "http://ssp-standard.org/SSP1/SystemStructureParameterValues"
 SSD_MEMBER = "SystemStructure.ssd"
 FMI_MODEL_DESCRIPTION = "modelDescription.xml"
-#: Bridge parameters that must survive the build with their modelled defaults.
-BRIDGE_PARAMETERS = ("transport", "remote_host", "telemetry_port", "control_port")
+#: RPR deployment parameters that must survive the build with their modelled defaults.
+RPR_DEPLOYMENT_PARAMETERS = ("transport", "bind_address", "peer_address")
 #: The aircraft is FMI 2.0 co-simulation only; the architecture declares the FMU
 #: source but not the interface, so the checker pins it here.
 FMI_VERSION = "2.0"
@@ -194,7 +195,6 @@ class SystemModel:
     aircraft_ssp: str
     scenario_binding: str
     scenario_mapping: str
-    bridge_input: bool
     instance_count: int
     aircraft: Aircraft
     processes: tuple[Process, ...]
@@ -546,16 +546,14 @@ def parse_architecture(architecture: Any, source: Path) -> SystemModel:
         )
 
     instance_type = _part_definition(architecture, parts["instances"].type_name)
-    for port_name in ("telemetry", "control"):
-        if port_name not in (instance_type.ports or {}):
-            raise ModelError(f"part def {instance_type.name}: missing port '{port_name}'")
+    if "telemetry" not in (instance_type.ports or {}):
+        raise ModelError(f"part def {instance_type.name}: missing port 'telemetry'")
     for port_name, port in (instance_type.ports or {}).items():
         external = _attributes(_port_definition(architecture, port.type_name)).get("external")
         if external is None or external[1] is not True:
             raise ModelError(
                 f"part def {instance_type.name}: port {port_name!r} must be declared external"
             )
-    overrides_def = _part_definition(architecture, parts["overrides"].type_name)
 
     processes = tuple(
         _parse_process(architecture, name, process_usage)
@@ -577,9 +575,6 @@ def parse_architecture(architecture: Any, source: Path) -> SystemModel:
         architecture=_typed(attributes, "architecture", "String", where),
         scenario_binding=_typed(attributes, "scenario_binding", "String", where),
         scenario_mapping=_typed(attributes, "scenario_mapping", "String", where),
-        bridge_input=_typed(
-            _attributes(overrides_def), "bridge_input", "Boolean", f"part def {overrides_def.name}"
-        ),
         instance_count=instance_count,
         aircraft=_parse_aircraft(architecture, parts["instances"]),
         processes=processes,
@@ -609,8 +604,19 @@ def load_model(path: Path | str = DEFAULT_MODEL) -> SystemModel:
         raise ModelError(
             f"architecture {architecture!r} does not exist; the system plane imports it"
         )
-    merged = _load_architecture([imported, source])
-    package = _load_architecture(imported).package_name
+    imported_architecture = _load_architecture(imported)
+    includes: list[Path] = [imported]
+    # The aircraft architecture imports the RPR entity dialect. pycps_sysml2
+    # resolves imports across the roots it is given, so supply the bundled
+    # definition as well instead of restating it in the system plane.
+    if "RprEntity" in set(imported_architecture.imports) | set(primary.imports):
+        try:
+            import pyfmi_rpr
+        except ImportError as exc:  # pragma: no cover - depends on the install
+            raise ModelError(f"RprEntity is imported but pyfmi_rpr is unavailable: {exc}") from exc
+        includes.append(pyfmi_rpr.rpr_entity())
+    merged = _load_architecture([*includes, source])
+    package = imported_architecture.package_name
     if package not in merged.imports:
         raise ModelError(
             f"{source}: the architecture declares package {package!r}, but the system plane "
@@ -782,12 +788,17 @@ def _check_manifest(manifest: Mapping[str, Any], model: SystemModel) -> list[str
         entities = instance.get("entities") or []
         if len(entities) != 1:
             problems.append(f"{name}: expected exactly one entity, found {len(entities)}")
-        for endpoint_name in ("telemetry", "control"):
-            endpoints = instance.get(endpoint_name) or []
-            if len(endpoints) != 1:
-                problems.append(
-                    f"{name}: expected exactly one {endpoint_name} endpoint, found {len(endpoints)}"
-                )
+        telemetry = instance.get("telemetry") or []
+        if len(telemetry) != 1:
+            problems.append(
+                f"{name}: expected exactly one telemetry endpoint, found {len(telemetry)}"
+            )
+        # Control is retired. The SysML lowerer (pysos_sysml) still emits one
+        # placeholder control endpoint because its subset requires controlPort;
+        # accept at most one so a real second control channel is still caught.
+        control = instance.get("control") or []
+        if len(control) > 1:
+            problems.append(f"{name}: expected no control endpoints, found {len(control)}")
     return problems
 
 
@@ -948,6 +959,19 @@ def _check_identity(manifest: Mapping[str, Any], model: SystemModel, repo_root: 
             markings[marking] = name
         else:
             problems.append(f"{name}: entity has no marking")
+        argv = _argv(instance)
+        for flag, key in (
+            ("--entity-site", "site"),
+            ("--entity-application", "application"),
+            ("--entity", "entity"),
+            ("--marking", "marking"),
+        ):
+            declared = _flag(argv, flag)
+            expected = str(entity.get(key) or "")
+            if declared is None:
+                problems.append(f"{name}: {flag} is missing; the RPR identity is not wired")
+            elif declared != expected:
+                problems.append(f"{name}: {flag} {declared!r} != manifest entity {key} {expected!r}")
         scenario = (instance.get("env") or {}).get("PYSOS_SCENARIO")
         if not scenario:
             problems.append(f"{name}: env.PYSOS_SCENARIO is missing")
@@ -1015,11 +1039,11 @@ def _check_flows(manifest: Mapping[str, Any], model: SystemModel) -> list[str]:
 
     for name, instance in instances.items():
         for endpoint_name, port in _instance_ports(instance).items():
+            if endpoint_name != "telemetry":
+                continue
             label = f"instance/{name}/{endpoint_name}"
-            if endpoint_name == "telemetry" and label not in covered_sources:
+            if label not in covered_sources:
                 problems.append(f"{name}: telemetry port {port} feeds no modelled flow")
-            if endpoint_name == "control" and label not in covered_targets:
-                problems.append(f"{name}: control port {port} has no modelled producer")
     return problems
 
 
@@ -1055,21 +1079,25 @@ def _check_processes(manifest: Mapping[str, Any], model: SystemModel) -> list[st
                     f"processes.{process.name}: --scenario {scenario!r} != frame.reference "
                     f"{declared!r}; the viewer/recorder origin would not match the federation frame"
                 )
-        telemetry_specs = [
-            argv[index + 1] for index, token in enumerate(argv[:-1]) if token == "--telemetry"
-        ]
-        if telemetry_specs:
-            expected = {
-                f"{port}:{entity.get('entity')}"
-                for instance in instances.values()
-                for port in [_instance_ports(instance).get("telemetry")]
-                if port is not None
-                for entity in (instance.get("entities") or [{}])[0:1]
-            }
-            if set(telemetry_specs) != expected:
+        if "visualizer" in process.roles:
+            if "--telemetry" in argv:
                 problems.append(
-                    f"processes.{process.name}: --telemetry {sorted(telemetry_specs)} != manifest "
-                    f"telemetry {sorted(expected)}"
+                    f"processes.{process.name}: --telemetry is retired; the viewer replays the "
+                    f"recorder truth stream"
+                )
+            source = _flag(argv, "--source")
+            if source != "jsonl":
+                problems.append(
+                    f"processes.{process.name}: --source {source!r} != 'jsonl'; the viewer replays "
+                    f"the recorder truth stream"
+                )
+            expected = str(
+                Path(model.artifacts.run_dir) / model.artifacts.files.get("truth", "truth.jsonl")
+            )
+            path = _flag(argv, "--path")
+            if path != expected:
+                problems.append(
+                    f"processes.{process.name}: --path {path!r} != recorder truth {expected!r}"
                 )
     return problems
 
@@ -1238,11 +1266,11 @@ def _check_aircraft(model: SystemModel, repo_root: Path, *, require: bool) -> li
             ssv = binding[0]
             if ssv in names:
                 parameters = _ssv_parameters(archive.read(ssv))
-                declared = "true" if model.bridge_input else "false"
-                if parameters.get("useBridgeInput") != declared:
+                # The JSON bridge and its useBridgeInput switch are gone; the
+                # baseline must not resurrect a bridge-only parameter.
+                if "useBridgeInput" in parameters:
                     problems.append(
-                        f"useBridgeInput is {parameters.get('useBridgeInput')!r} but the model "
-                        f"declares {declared!r}"
+                        "useBridgeInput is still bound but the JSON bridge is retired"
                     )
 
         resources = {Path(name).name for name in names if name.startswith("resources/") and name.endswith(".fmu")}
@@ -1255,15 +1283,15 @@ def _check_aircraft(model: SystemModel, repo_root: Path, *, require: bool) -> li
                 problems.append(f"{component.fmu}: FMI version {version!r} != {FMI_VERSION!r}")
             if not co_simulation:
                 problems.append(f"{component.fmu}: expected a {FMI_INTERFACE} FMU")
-            if component.name == "udp_bridge":
-                for key in BRIDGE_PARAMETERS:
+            if component.name == "rpr_entity":
+                for key in RPR_DEPLOYMENT_PARAMETERS:
                     declared = component.parameters.get(key)
                     if declared is None:
                         continue
                     expected = str(declared[1]).lower() if isinstance(declared[1], bool) else str(declared[1])
                     if parameters.get(key) != expected:
                         problems.append(
-                            f"udp_bridge.{key}: FMU default {parameters.get(key)!r} != modelled "
+                            f"rpr_entity.{key}: FMU default {parameters.get(key)!r} != modelled "
                             f"{expected!r}"
                         )
 
@@ -1333,7 +1361,10 @@ def check(
 def summary(model: SystemModel, manifest: Mapping[str, Any]) -> str:
     instances = _instances(manifest)
     ports = sorted(
-        port for instance in instances.values() for port in _instance_ports(instance).values()
+        port
+        for instance in instances.values()
+        for name, port in _instance_ports(instance).items()
+        if name == "telemetry"
     )
     return (
         f"{model.federation}: {len(instances)} entities, {len(model.processes)} host processes, "

@@ -16,7 +16,7 @@ $PY -m pytest tests/test_sos_model.py -q
 
 ```bash
 ./scripts/check_environment.sh --source-build   # resolves the venv, omc, cmake, c++
-./scripts/build_airplane.py                     # 9 Modelica FMUs + native UdpBridge + SSPs
+./scripts/build_airplane.py                     # 9 Modelica FMUs + RPR state source/entity + SSPs
 $PY scripts/sos_model.py --artifacts            # proved against the fresh artifacts
 ```
 
@@ -27,16 +27,12 @@ never silently falls back to a bare system `python3`. `check_environment.sh
 --source-build` applies the same resolution and also checks `omc`, `cmake` and a
 C++ compiler.
 
-Two upstream fixes were required to make that build work here and are part of
-the setup, not workarounds:
-
-- `pyssp_standard`'s XSD validators share one cached lxml schema; validating it
-  from the four parallel FMU-build threads corrupted the heap ("double free").
-  Compile and validation are now serialised by a process-wide lock
-  (`common/xml_schema_validation.py`), with a threaded regression test.
-- The native bridge test stepped once, but `BridgeRuntime::do_step` deliberately
-  skips the first communication step (connected inputs still carry zeros). The
-  test now steps twice.
+One upstream fix was required to make that build work here and is part of the
+setup, not a workaround: `pyssp_standard`'s XSD validators share one cached lxml
+schema; validating it from the four parallel FMU-build threads corrupted the
+heap ("double free"). Compile and validation are now serialised by a
+process-wide lock (`common/xml_schema_validation.py`), with a threaded
+regression test.
 
 ## 1. What must be modelled to start and run a federation
 
@@ -45,16 +41,16 @@ A run is complete only when all of the following are decided somewhere, once:
 | fact | owner |
 | --- | --- |
 | process table: command, cwd, env, interpreter | entity plane (`sos/aircraft_federation.sysml` → manifest) |
-| entity identity: site/application/entity, marking | entity plane |
-| per-instance UDP endpoints: telemetry out, control in | entity plane |
+| per-instance RPR bind endpoint (one-way broadcast to the recorder) | entity plane |
+| entity identity: site/application/entity and marking in the broadcast | entity plane (`command` argv) |
 | scenario/mission per entity | entity plane (`scenario` attribute → `PYSOS_SCENARIO`) |
-| run parameters per instance: realtime, stop time, placement, waypoint frame | entity plane (`command` argv) |
+| run parameters per instance: realtime, stop time, placement, waypoint frame, reference origin | entity plane (`command` argv) |
 | shared frame: origin, axis order, waypoint frame | system plane (`sos/federation_system.sysml`) |
 | timing contract: step, sample period, watchdog, epoch, barrier, overrun policy | system plane |
-| host-side processes: supervisor/recorder, viewer, operator | system plane |
+| host-side processes: supervisor/recorder, viewer, builder | system plane |
 | data flows: which endpoint feeds which consumer, encoding, rate | system plane |
-| aircraft composition: 10 FMUs, their ports, parameters and 24 wires | imported from `3rd_party/airplane/architecture/aircraft.sysml` |
-| artifact binding: baseline SSP, scenario SSV/SSM, `useBridgeInput` | system plane |
+| aircraft composition: 11 FMUs, their ports, parameters and 23 wires | imported from `3rd_party/airplane/architecture/aircraft.sysml` |
+| artifact binding: baseline SSP, scenario SSV/SSM | system plane |
 | artifacts: run directory and the files the run is judged by | system plane |
 
 The entity plane is lowered, not re-authored: `pysos_sysml` turns the SysML
@@ -65,25 +61,30 @@ resolves the system plane *against* the manifest and fails on any gap.
 The aircraft is **imported, not restated**: `sos/federation_system.sysml` says
 `private import Aircraft::*;` and the checker loads
 `3rd_party/airplane/architecture/aircraft.sysml` (package `Aircraft`, declared by
-the `architecture` attribute) alongside it. Ten FMI 2.0 co-simulation FMUs, their
-ports, parameter-set defaults, FMU sources and the 24 inter-component
-connections come from `AircraftModel`; the system plane adds only
-`part def AircraftInstance` with the two `external` UDP boundary ports
-(`telemetry`/`control`, which no SSP component declares).
+the `architecture` attribute) alongside the bundled RPR entity definition from
+`pyfmi_rpr`. Eleven FMI 2.0 co-simulation FMUs (nine Modelica models plus
+`rpr_state_source` and `rpr_entity`), their ports, parameter-set defaults, FMU
+sources and the 23 inter-component connections come from `AircraftModel`; the
+system plane adds only `part def AircraftInstance` with the one `external` RPR
+broadcast boundary port (`telemetry`, which no SSP component declares).
 
-Import resolution works with the shipped `pycps_sysml2`; the model only has to
-name the architecture file, because a package name cannot be mapped back to a
-path. The SSP's `SystemStructure.ssd` stays authoritative for field-level wiring;
+Import resolution works with the shipped `pycps_sysml2`; the model names the
+architecture file, and the checker supplies `pyfmi_rpr`'s bundled `RprEntity`
+definition as a second include root because the architecture imports it. The
+SSP's `SystemStructure.ssd` stays authoritative for field-level wiring;
 the checker proves the built SSP still matches the imported model instead of
 duplicating 286 scalar connectors in SysML.
 
 | aircraft parameter | value | where it comes from |
 | --- | --- | --- |
-| `udp_bridge.telemetry_port` / `control_port` | 5510/5511, 5512/5513, 5514/5515, 5516/5517 | manifest instance endpoints → SSV/SSM |
-| `udp_bridge.reference_latitude_deg` / `longitude_deg` / `altitude_m` | −2.957519 / 39.232955 / 0 | `FrameOrigin` → instance argv → SSV/SSM |
+| `rpr_entity.transport` | `udp` | instance preparation |
+| `rpr_entity.bind_address` | 5510, 5512, 5514, 5516 | manifest instance telemetry endpoint → SSV/SSM |
+| `rpr_entity.peer_address` | `127.0.0.1:5505` | recorder listener → SSV/SSM |
+| `rpr_state_source.entity_site` / `entity_application` / `entity_entity` | 1 / 1 / 1–4 | entity identity → instance argv → SSV/SSM |
+| `rpr_state_source.marking_characters` | RED-1, RED-2, BLUE-1, BLUE-2 | entity identity → instance argv → SSV/SSM |
+| `rpr_state_source.reference_latitude_deg` / `reference_longitude_deg` / `reference_altitude_m` | −2.957519 / 39.232955 / 0 | `FrameOrigin` → instance argv → SSV/SSM |
 | `environment.initX_km` / `initY_km` | placement offsets 0/0, 0/5, 0/10, 0/15 km | instance argv → SSV/SSM |
 | `autopilot_module.waypoint*_km`, `targetAirspeed_mps` | scenario | scenario JSON → SSV/SSM |
-| `control_interface.useBridgeInput` | `false` | `FederationOverrides.bridge_input` → SSV/SSM |
 | `simulation.stop_time` / `timestep` | 120 s / 0.1 s | `Timing` → instance argv / config |
 
 ## 2. Which pyssporg pieces are reasonable here
@@ -132,33 +133,39 @@ Entity-plane instance command (one line per entity in the SysML):
 
 ```
 python scripts/run_instance_process.py --realtime --stop-time 120 \
-  --offset-north-km 0 --offset-east-km 5 --waypoint-frame federation
+  --offset-north-km 0 --offset-east-km 5 --waypoint-frame federation \
+  --reference-latitude-deg -2.957519 --reference-longitude-deg 39.232955 \
+  --reference-altitude-m 0 --entity-site 1 --entity-application 1 \
+  --entity 2 --marking RED-2
 ```
 
 `run_instance_process.py` derives its 1-based index (ports, defaults) from
-`PYSOS_TELEMETRY_PORT`, prepares the per-instance SSP, then `exec`s ssp4sim, so
-the supervised process is the simulation itself.
+`PYSOS_TELEMETRY_PORT`, prepares the per-instance SSP (RPR bind/peer, identity,
+origin), then `exec`s ssp4sim, so the supervised process is the simulation
+itself.
 
 System-plane SysML (package `FederationSystem`, entry `part def
 SystemDescription`):
 
 - `port def` interfaces carry the flow contract — protocol, encoding, rate, and
-  optionally `udp_port`. `RprListener` owns the only host-side port number
+  optionally `udp_port`. `RprBroadcast` is the external aircraft edge
+  (`encoding = "rpr"`); `RprListener` owns the only host-side port number
   (5505); every other number comes from the manifest, so nothing is copied;
 - `part def FrameOrigin` — federation origin (geodetic), axis order, waypoint
   frame, and the scenario point the origin must equal;
 - `part def Timing` — `soft_realtime`, 0.1 s step, 10 Hz sample period, 2.0 s
   fan-in watchdog, 0.25 s recording interval, 120 s stop time,
   `per_process_monotonic` epoch, `barrier: none`, `overrun_policy: lag`;
-- `part def AircraftInstance` — the imported `AircraftModel` plus the two UDP
-  boundary ports; `part instances : AircraftInstance [4]` is one occurrence per
-  manifest entry, and identity, endpoints, scenario and run flags stay in the
-  entity plane;
-- `part def Orchestrator` / `Viewer` / `Pilot` — the host-side processes with
-  `roles`, `launch`, `cwd`, `command` and typed ports;
-- `connection <name> connect a.p to b.q` — the four flows; a connection to the
-  multiplicity part lowers to the `instance/*` wildcard, and its protocol,
-  encoding and rate come from the source port type;
+- `part def AircraftInstance` — the imported `AircraftModel` plus the one
+  external RPR broadcast port; `part instances : AircraftInstance [4]` is one
+  occurrence per manifest entry, and identity, endpoints, scenario and run
+  flags stay in the entity plane;
+- `part def Orchestrator` / `Viewer` / `Builder` — the host-side processes with
+  `roles`, `launch`, `cwd`, `command` and typed ports. The orchestrator binds
+  RPR 5505; the viewer reads the recorder truth file and owns no socket;
+- `connection <name> connect a.p to b.q` — the RPR broadcast flow; a connection
+  to the multiplicity part lowers to the `instance/*` wildcard, and its
+  protocol, encoding and rate come from the source port type;
 - `part def Artifacts` — `build/runs/sos4` and the files the run is judged by.
 
 ## 4. Frame contract
@@ -167,8 +174,8 @@ The simulation frame is a flat local tangent plane at the federation origin:
 `x` north, `y` east, `z` up, kilometres
 (`3rd_party/airplane/scripts/lib/common/geo/geometry.py:50-66`). The viewer and
 recorder use ENU metres, `(east, north, up) = (y, x, z)`
-(`flight_viewer/geo.py:48-51`). The geodetic origin is only needed to encode
-DIS/ECEF; relative geometry never uses it.
+(`flight_viewer/geo.py:48-51`). The geodetic origin is needed to encode
+RPR/DIS ECEF; relative geometry never uses it.
 
 Each aircraft scenario is authored around its own `points[0]`, and the four
 checked-in scenarios disagree by thousands of kilometres. Left alone, four
@@ -187,7 +194,7 @@ What the model declares:
 | --- | --- | --- |
 | class | `soft_realtime` | ssp4sim pacing is best-effort; no hard-RT claim |
 | step | 0.1 s | `architecture/aircraft.sysml` baseline, ssp4sim macro step |
-| sample period / rate | 0.1 s / 10 Hz | bridge cadence and fan-in grid |
+| sample period / rate | 0.1 s / 10 Hz | RPR publish cadence and fan-in grid |
 | fan-in watchdog | 2.0 s | partial-sample flush in `SampleFanIn` |
 | stop time | 120 s | federation run window; per instance via `--stop-time` |
 | epoch | `per_process_monotonic` | clock reference is per ssp4sim process |
@@ -201,8 +208,8 @@ Consequences that the model makes explicit:
   initialisation, is not measured, and is not compensated;
 - sample alignment exists only in the recorder (ordinal index × 0.1 s, 2 s
   watchdog), not between simulators; sub-sample interaction is not meaningful;
-- control input is consumed by the bridge asynchronously (non-blocking read,
-  1 s inactivity fallback), so pilot commands are not lock-stepped either.
+- every entity publishes one-way; the recorder never feeds a command back, so
+  there is no control channel to lock-step.
 
 ## 6. What the check proves
 
@@ -210,8 +217,9 @@ Consequences that the model makes explicit:
 
 1. the manifest parses and validates through `pysos_coordinate`, and its
    `name`, `schema` and `timing` match the model;
-2. every instance has exactly one entity, one telemetry and one control
-   endpoint, a non-empty command and a resolvable scenario file;
+2. every instance has exactly one entity and one telemetry endpoint, a
+   non-empty command and a resolvable scenario file (a control endpoint is
+   accepted only as the single legacy placeholder the SysML lowerer emits);
 3. `timing.realtime` is reflected by `--realtime` in every instance command, and
    `timing.stop_time_s` by an equal `--stop-time`;
 4. stop time and sample period are integer multiples of the step, and the
@@ -219,23 +227,24 @@ Consequences that the model makes explicit:
 5. the frame origin is in range and equals `points[n]` of the scenario the model
    cites; every instance carries the declared `--waypoint-frame` and explicit
    placement offsets, and no two entities share a placement;
-6. entity slugs and markings are unique, and no host process is named like an
-   instance;
+6. entity slugs and markings are unique, every instance command carries
+   identity flags equal to its manifest entity, and no host process is named
+   like an instance;
 7. no UDP port is declared twice across instances and host ports;
-8. every instance telemetry port feeds at least one modelled flow, every control
-   port has at least one modelled producer, and every flow endpoint resolves;
+8. every instance telemetry port feeds the modelled RPR broadcast flow, and
+   every flow endpoint resolves;
 9. a supervisor process names the same manifest, viewer/recorder `--scenario`
    matches the frame reference, `--run-dir` matches `artifacts.run_dir`, and the
-   viewer's `--telemetry` set equals the manifest telemetry endpoints;
+   viewer replays the recorder truth file (`--source jsonl`, `--path`
+   `artifacts.run_dir/truth.jsonl`) with no `--telemetry` socket;
 10. the artifact set contains `truth`, `measurements` and `run`, with unique
     paths and a repository-relative run directory;
-11. the built `scenario.ssp` matches the imported aircraft: the same ten
+11. the built `scenario.ssp` matches the imported aircraft: the same eleven
     components with the same FMU files, every modelled port present as an SSD
     connector, every modelled parameter present as an SSD parameter connector
     (arrays as `name[i]`), every modelled wire present as SSD connections, FMI
-    2.0 CoSimulation, the bridge's parameter defaults, the
-    `MissionScenario.ssv`/`HighAltitudeIntercept.ssm` binding, and a
-    `useBridgeInput` value equal to `FederationOverrides.bridge_input`.
+    2.0 CoSimulation, the RPR deployment defaults, and the
+    `MissionScenario.ssv`/`HighAltitudeIntercept.ssm` binding.
 
 ## 7. Known gaps (next iterations, in order of value)
 
@@ -251,14 +260,18 @@ Consequences that the model makes explicit:
    `pysos_sysml` to lower ports, connections and extra attributes would collapse
    both planes into one package and let per-instance run parameters leave the
    `command` string. Until then the split and the argv encoding are deliberate.
-4. **Viewer launch.** The viewer is not started by the coordinator, so its
-   telemetry list is duplicated and only guarded by the check. Launching it as
-   another supervised instance would remove the duplication.
-5. **Per-entity origin on the wire.** The bridge's `reference_*` fields exist but
-   stay at their defaults. Emitting the true origin per entity would let a
-   recorder accept non-rebased instances.
-6. **Entity type/force.** `EntityRef` carries site/application/entity and
-   marking only; DIS/RPR entity type and force still come from viewer config.
+4. **Viewer launch.** The viewer is not started by the coordinator; it is a
+   manual replay of the recorder truth file, so the file path is duplicated and
+   only guarded by the check. Launching it as another supervised instance would
+   remove the duplication.
+5. **Vestigial control endpoint.** `pysos_sysml` requires `controlPort` and
+   always lowers one control endpoint plus `PYSOS_CONTROL_PORT`. Schema 1
+   accepts an empty `control`, so the generated two-instance manifest drops it;
+   making `controlPort` optional in `pysos_sysml` would let the aircraft
+   manifest drop it too.
+6. **Entity type/force.** `rpr_state_source` carries site/application/entity,
+   marking and force; the instance preparer still publishes neutral entity
+   type and force defaults because the manifest has no fields for them.
 7. **Heterogeneous participants.** Any non-FMI software joining the federation
    would need `pyfmi_interop` (FMU wrapper, overrun policies, its own transport),
    which would then supersede `overrun_policy: lag`.

@@ -5,7 +5,8 @@ The source SSP already binds ``resources/MissionScenario.ssv`` and
 ``resources/HighAltitudeIntercept.ssm`` in its ``SystemStructure.ssd``. This
 script rewrites those two archive members in a per-instance copy of the SSP:
 
-* ``udp_bridge.telemetry_port`` / ``udp_bridge.control_port``
+* ``rpr_entity`` transport, per-instance bind address and the RPR recorder peer
+* ``rpr_state_source`` reference origin and entity identity/marking
 * shifted ``initX_km`` (north) / ``initY_km`` (east) when an offset applies
 * the ``MissionScenario.ssv`` waypoint array, ``waypointCount``,
   ``waypointProximity_km`` and ``targetAirspeed_mps`` selected by ``scenario``
@@ -52,12 +53,15 @@ NS_SSV = "http://ssp-standard.org/SSP1/SystemStructureParameterValues"
 NS_SSM = "http://ssp-standard.org/SSP1/SystemStructureParameterMapping"
 NS_SSD = "http://ssp-standard.org/SSP1/SystemStructureDescription"
 
-TELEMETRY_PARAM = "udp_bridge.telemetry_port"
-CONTROL_PARAM = "udp_bridge.control_port"
-REFERENCE_LATITUDE_PARAM = "udp_bridge.reference_latitude_deg"
-REFERENCE_LONGITUDE_PARAM = "udp_bridge.reference_longitude_deg"
-REFERENCE_ALTITUDE_PARAM = "udp_bridge.reference_altitude_m"
-USE_BRIDGE_INPUT_PARAM = "useBridgeInput"
+RPR_ENTITY = "rpr_entity"
+RPR_STATE_SOURCE = "rpr_state_source"
+#: RPR fan-in recorder: the dedicated UDP 5505 port used by ``rpr_e2e.py``.
+RPR_RECORDER_ADDRESS = "127.0.0.1:5505"
+#: Manifest instance endpoints are loopback; only the per-instance port varies.
+RPR_BIND_HOST = "127.0.0.1"
+#: The JSON bridge is gone from the aircraft SSP; drop anything it left behind.
+LEGACY_BRIDGE_PREFIX = "udp_bridge."
+LEGACY_BRIDGE_INPUT = "useBridgeInput"
 INIT_X_PARAM = "initX_km"
 INIT_Y_PARAM = "initY_km"
 WAYPOINT_COUNT_PARAM = "waypointCount"
@@ -71,7 +75,11 @@ ET.register_namespace("ssd", NS_SSD)
 
 
 def instance_defaults(index: int) -> dict[str, float | int]:
-    """Default ports and offset for a 1-based instance index."""
+    """Default ports and offset for a 1-based instance index.
+
+    ``control_port`` stays in the plan because the federation manifest schema
+    still declares a control endpoint; instance bundles no longer consume it.
+    """
 
     if index < 1:
         raise SystemExit(f"--instance must be 1-based, got {index}")
@@ -130,7 +138,6 @@ def _scenario_parameter_set(
             local_points,
             Path(directory) / f"{scenario}.ssv",
             baseline_path=GENERATED_SCENARIO_SSV,
-            enable_bridge_input=False,
             waypoint_proximity_km=float(proximity),
             target_airspeed_mps=None if airspeed is None else float(airspeed),
         )
@@ -187,11 +194,24 @@ def _set_ssv_parameter(params: ET.Element, name: str, tag: str, value: str) -> N
     ET.SubElement(parameter, f"{{{NS_SSV}}}{tag}").set("value", value)
 
 
+def _is_legacy_bridge(name: str | None) -> bool:
+    if not name:
+        return False
+    return (
+        name.startswith(LEGACY_BRIDGE_PREFIX)
+        or name == LEGACY_BRIDGE_INPUT
+        or name.endswith(f".{LEGACY_BRIDGE_INPUT}")
+    )
+
+
 def _rewrite_ssv(payload: bytes, updates: dict[str, tuple[str, str]]) -> bytes:
     root = ET.fromstring(payload)
     params = root.find(f"{{{NS_SSV}}}Parameters")
     if params is None:
         raise SystemExit(f"{SSV_MEMBER}: no <ssv:Parameters> element")
+    for parameter in list(params.findall(f"{{{NS_SSV}}}Parameter")):
+        if _is_legacy_bridge(parameter.get("name")):
+            params.remove(parameter)
     for name, (tag, value) in updates.items():
         _set_ssv_parameter(params, name, tag, value)
     ET.indent(root, space="  ")
@@ -203,6 +223,10 @@ def _rewrite_ssm(payload: bytes, mapping: dict[str, str]) -> bytes:
     entries = root.findall(f"{{{NS_SSM}}}MappingEntry")
     if not entries:
         raise SystemExit(f"{SSM_MEMBER}: no <ssm:MappingEntry> elements")
+    for entry in list(entries):
+        if _is_legacy_bridge(entry.get("source")) or _is_legacy_bridge(entry.get("target")):
+            root.remove(entry)
+    entries = root.findall(f"{{{NS_SSM}}}MappingEntry")
     by_source = {entry.get("source"): entry for entry in entries}
     for source, target in mapping.items():
         entry = by_source.get(source)
@@ -312,7 +336,6 @@ def prepare_instance(
     out_dir: Path,
     *,
     telemetry_port: int | None = None,
-    control_port: int | None = None,
     offset_north_km: float | None = None,
     offset_east_km: float | None = None,
     working_dir: Path | None = None,
@@ -322,24 +345,32 @@ def prepare_instance(
     scenario: str | None = None,
     realtime: bool = False,
     waypoint_frame: str = "local",
-    bridge_input: bool = False,
     reference_latitude_deg: float | None = None,
     reference_longitude_deg: float | None = None,
     reference_altitude_m: float | None = None,
+    entity_site: str = "1",
+    entity_application: str = "1",
+    entity: str | None = None,
+    marking: str = "",
 ) -> dict[str, str]:
     """Write the per-instance SSP and config; return their paths and settings."""
 
     defaults = instance_defaults(index)
     telemetry = int(telemetry_port if telemetry_port is not None else defaults["telemetry_port"])
-    control = int(control_port if control_port is not None else defaults["control_port"])
     north = float(offset_north_km if offset_north_km is not None else defaults["offset_north_km"])
     east = float(offset_east_km if offset_east_km is not None else defaults["offset_east_km"])
     scenario_name = scenario or DEFAULT_SCENARIO
     if waypoint_frame not in ("local", "federation"):
         raise SystemExit(f"waypoint frame must be 'local' or 'federation', got {waypoint_frame!r}")
-    for label, port in (("--telemetry-port", telemetry), ("--control-port", control)):
-        if not 1 <= port <= 65535:
-            raise SystemExit(f"{label} out of range: {port}")
+    if not 1 <= telemetry <= 65535:
+        raise SystemExit(f"--telemetry-port out of range: {telemetry}")
+    try:
+        entity_numbers = tuple(int(value) for value in (entity_site, entity_application, entity or index))
+    except ValueError:
+        raise SystemExit(
+            f"entity site/application/entity must be integers, got "
+            f"{entity_site!r}/{entity_application!r}/{entity!r}"
+        ) from None
 
     source_ssp = source_ssp.resolve()
     if not source_ssp.is_file():
@@ -373,21 +404,39 @@ def prepare_instance(
         )
 
     updates = {
-        TELEMETRY_PARAM: ("Integer", str(telemetry)),
-        CONTROL_PARAM: ("Integer", str(control)),
         INIT_X_PARAM: ("Real", f"{base_north + north:.6f}"),
         INIT_Y_PARAM: ("Real", f"{base_east + east:.6f}"),
-        USE_BRIDGE_INPUT_PARAM: ("Boolean", "true" if bridge_input else "false"),
+        f"{RPR_ENTITY}.transport": ("String", "udp"),
+        f"{RPR_ENTITY}.bind_address": ("String", f"{RPR_BIND_HOST}:{telemetry}"),
+        f"{RPR_ENTITY}.peer_address": ("String", RPR_RECORDER_ADDRESS),
+        f"{RPR_STATE_SOURCE}.entity_site": ("Integer", str(entity_numbers[0])),
+        f"{RPR_STATE_SOURCE}.entity_application": ("Integer", str(entity_numbers[1])),
+        f"{RPR_STATE_SOURCE}.entity_entity": ("Integer", str(entity_numbers[2])),
+        f"{RPR_STATE_SOURCE}.marking_characters": ("String", marking),
+        f"{RPR_STATE_SOURCE}.marking_character_set": ("Integer", "0"),
     }
+    # The instance manifest has no entity type or force yet; publish the neutral
+    # RPR defaults until the federation sources those fields.
+    for name in (
+        "entity_type_kind",
+        "entity_type_domain",
+        "entity_type_country",
+        "entity_type_category",
+        "entity_type_subcategory",
+        "entity_type_specific",
+        "entity_type_extra",
+        "force",
+    ):
+        updates[f"{RPR_STATE_SOURCE}.{name}"] = ("Integer", "0")
     # The federation frame origin is the wire origin of every entity: the
     # payload must name it, otherwise a consumer cannot place the record.
     for name, value in (
-        (REFERENCE_LATITUDE_PARAM, reference_latitude_deg),
-        (REFERENCE_LONGITUDE_PARAM, reference_longitude_deg),
-        (REFERENCE_ALTITUDE_PARAM, reference_altitude_m),
+        ("reference_latitude_deg", reference_latitude_deg),
+        ("reference_longitude_deg", reference_longitude_deg),
+        ("reference_altitude_m", reference_altitude_m),
     ):
         if value is not None:
-            updates[name] = ("Real", f"{float(value):.9f}")
+            updates[f"{RPR_STATE_SOURCE}.{name}"] = ("Real", f"{float(value):.9f}")
     updates.update(
         _scenario_parameter_set(
             scenario_name,
@@ -397,16 +446,17 @@ def prepare_instance(
         )
     )
     mapping = {
-        TELEMETRY_PARAM: TELEMETRY_PARAM,
-        CONTROL_PARAM: CONTROL_PARAM,
-        INIT_X_PARAM: f"environment.{INIT_X_PARAM}",
-        INIT_Y_PARAM: f"environment.{INIT_Y_PARAM}",
-        WAYPOINT_COUNT_PARAM: f"autopilot_module.{WAYPOINT_COUNT_PARAM}",
-        USE_BRIDGE_INPUT_PARAM: f"control_interface.{USE_BRIDGE_INPUT_PARAM}",
-        REFERENCE_LATITUDE_PARAM: REFERENCE_LATITUDE_PARAM,
-        REFERENCE_LONGITUDE_PARAM: REFERENCE_LONGITUDE_PARAM,
-        REFERENCE_ALTITUDE_PARAM: REFERENCE_ALTITUDE_PARAM,
+        name: name
+        for name in updates
+        if name.startswith((f"{RPR_ENTITY}.", f"{RPR_STATE_SOURCE}."))
     }
+    mapping.update(
+        {
+            INIT_X_PARAM: f"environment.{INIT_X_PARAM}",
+            INIT_Y_PARAM: f"environment.{INIT_Y_PARAM}",
+            WAYPOINT_COUNT_PARAM: f"autopilot_module.{WAYPOINT_COUNT_PARAM}",
+        }
+    )
 
     _validate_ssd(contents[SSD_MEMBER], mapping)
     rewritten = {
@@ -439,14 +489,15 @@ def prepare_instance(
         "csv": str(csv_file),
         "log": str(log_file),
         "telemetry_port": str(telemetry),
-        "control_port": str(control),
+        "rpr_bind_address": f"{RPR_BIND_HOST}:{telemetry}",
         "init_x_km": updates[INIT_X_PARAM][1],
         "init_y_km": updates[INIT_Y_PARAM][1],
         "stop_time": f"{resolved_stop_time}",
         "scenario": scenario_name,
         "realtime": str(realtime).lower(),
         "waypoint_frame": waypoint_frame,
-        "bridge_input": str(bridge_input).lower(),
+        "entity": "/".join(str(value) for value in entity_numbers),
+        "marking": marking,
     }
 
 
@@ -455,8 +506,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--instance", type=int, required=True, help="1-based instance index.")
     parser.add_argument("--source-ssp", type=Path, default=DEFAULT_SOURCE_SSP, help="Prepared source SSP archive.")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="Directory for instance bundles.")
-    parser.add_argument("--telemetry-port", type=int, default=None, help="Telemetry UDP port.")
-    parser.add_argument("--control-port", type=int, default=None, help="Control UDP port.")
+    parser.add_argument("--telemetry-port", type=int, default=None, help="Per-instance RPR bind UDP port.")
     parser.add_argument("--offset-north-km", type=float, default=None, help="Shift initX_km by this many kilometres.")
     parser.add_argument("--offset-east-km", type=float, default=None, help="Shift initY_km by this many kilometres.")
     parser.add_argument("--working-dir", type=Path, default=None, help="Simulation working directory.")
@@ -471,14 +521,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="local",
         help="Keep scenario waypoints in their own local frame, or translate them into the federation frame.",
     )
-    parser.add_argument(
-        "--bridge-input",
-        action="store_true",
-        help="Let UDP pilot commands steer the aircraft (ControlParameters.useBridgeInput).",
-    )
     parser.add_argument("--reference-latitude-deg", type=float, default=None, help="Wire origin latitude.")
     parser.add_argument("--reference-longitude-deg", type=float, default=None, help="Wire origin longitude.")
     parser.add_argument("--reference-altitude-m", type=float, default=None, help="Wire origin altitude.")
+    parser.add_argument("--entity-site", default="1", help="Instance entity site (manifest entities[0].site).")
+    parser.add_argument("--entity-application", default="1", help="Instance entity application.")
+    parser.add_argument("--entity", default=None, help="Instance entity number (default: the instance index).")
+    parser.add_argument("--marking", default="", help="Instance entity marking (manifest entities[0].marking).")
     return parser.parse_args(argv)
 
 
@@ -489,7 +538,6 @@ def main(argv: list[str] | None = None) -> int:
         args.source_ssp,
         args.out_dir,
         telemetry_port=args.telemetry_port,
-        control_port=args.control_port,
         offset_north_km=args.offset_north_km,
         offset_east_km=args.offset_east_km,
         working_dir=args.working_dir,
@@ -497,18 +545,21 @@ def main(argv: list[str] | None = None) -> int:
         log_path=args.log,
         stop_time=args.stop_time,
         waypoint_frame=args.waypoint_frame,
-        bridge_input=args.bridge_input,
         reference_latitude_deg=args.reference_latitude_deg,
         reference_longitude_deg=args.reference_longitude_deg,
         reference_altitude_m=args.reference_altitude_m,
+        entity_site=args.entity_site,
+        entity_application=args.entity_application,
+        entity=args.entity,
+        marking=args.marking,
         scenario=args.scenario,
         realtime=args.realtime,
     )
     print(f"Wrote SSP {summary['ssp']}")
     print(f"Wrote config {summary['config']}")
     print(
-        f"Instance {summary['instance']}: telemetry {summary['telemetry_port']}, "
-        f"control {summary['control_port']}, scenario {summary['scenario']}, init "
+        f"Instance {summary['instance']}: RPR bind {summary['rpr_bind_address']}, "
+        f"scenario {summary['scenario']}, init "
         f"(north {summary['init_x_km']} km, east {summary['init_y_km']} km)"
     )
     return 0

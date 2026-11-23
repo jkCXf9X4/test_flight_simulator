@@ -18,26 +18,14 @@ package FederationSystem {
   private import Aircraft::*;
 
   // -- interfaces: the flow contract lives on the port type ---------------
-  // `external` marks the process boundary: these ports are the UDP edge, not
-  // SSP connectors, so the artifact check must not look for them in the SSD.
-  port def TelemetryInterface {
-    attribute protocol : String = "udp";
-    attribute encoding : String = "json-udp";
-    attribute rate_hz : Real = 10.0;
-    attribute external : Boolean = true;
-  }
-
-  port def ControlInterface {
-    attribute protocol : String = "udp";
-    attribute encoding : String = "json-udp";
-    attribute rate_hz : Real = 10.0;
-    attribute external : Boolean = true;
-  }
-
-  port def RprInterface {
+  // The aircraft broadcasts RPR entity-state packets: one outbound edge per
+  // instance, addressed to the recorder on UDP 5505. `external` marks the
+  // process boundary, so the artifact check must not look for it in the SSD.
+  port def RprBroadcast {
     attribute protocol : String = "udp";
     attribute encoding : String = "rpr";
     attribute rate_hz : Real = 10.0;
+    attribute external : Boolean = true;
   }
 
   port def RprListener {
@@ -75,33 +63,21 @@ package FederationSystem {
 
   // -- the actual aircraft ------------------------------------------------
   // Imported from the airplane submodule, not duplicated: component defs,
-  // ports, parameter defaults, FMU sources and the 24 inter-component
+  // ports, parameter defaults, FMU sources and the inter-component
   // connections all come from AircraftModel.
-  // The federation adds only the two boundary ports the airplane architecture
-  // does not declare: the UDP edge served by UdpBridge (no SSP connector).
+  // The federation adds only the boundary port the airplane architecture does
+  // not declare: the RPR broadcast edge served by `rpr_entity` (no SSP
+  // connector). `telemetry` is the manifest endpoint name; its type is RPR.
   part def AircraftInstance {
     part aircraft : AircraftModel;
-    port telemetry : TelemetryInterface;
-    port control : ControlInterface;
-  }
-
-  // -- parameter overrides -------------------------------------------------
-  // The federation overrides exactly one aircraft parameter set member:
-  // ControlParameters.useBridgeInput (pilot commands steer the aircraft). Every
-  // other deviation is per instance and comes from the manifest/scenario:
-  // UdpParameters.telemetry_port/control_port from the instance endpoints,
-  // EnvironmentParameters.initX_km/initY_km from the placement offsets,
-  // AutopilotParameters.waypoint*/targetAirspeed_mps from the scenario, and
-  // UdpParameters.reference_* from FrameOrigin. The artifact check proves all
-  // of them landed in the built SSV/SSM.
-  part def FederationOverrides {
-    attribute bridge_input : Boolean = false;
+    port telemetry : RprBroadcast;
   }
 
   // -- host-side participants ---------------------------------------------
+  // The orchestrator supervises the instance processes and listens on the
+  // dedicated RPR fan-in port; it writes truth/measure/rrd, never a live JSON
+  // stream.
   part def Orchestrator {
-    port telemetry_in : TelemetryInterface;
-    port rpr_out : RprInterface;
     port rpr_in : RprListener;
     attribute roles : String = "supervisor,recorder";
     attribute launch : String = "operator";
@@ -109,20 +85,12 @@ package FederationSystem {
     attribute command : String = "python scripts/run_e2e_rpr.py --manifest manifests/aircraft_federation.manifest.json --scenario 3rd_party/airplane/resources/scenarios/test_scenario.json --run-dir build/runs/sos4 --realtime";
   }
 
+  // The viewer replays the recorder truth stream; it owns no UDP socket.
   part def Viewer {
-    port telemetry_in : TelemetryInterface;
     attribute roles : String = "visualizer";
     attribute launch : String = "manual";
     attribute cwd : String = ".";
-    attribute command : String = "python -m flight_viewer --source json-udp --sink rerun --spawn --scenario 3rd_party/airplane/resources/scenarios/test_scenario.json --telemetry 5510:1 --telemetry 5512:2 --telemetry 5514:3 --telemetry 5516:4 --record build/runs/sos4/flight_viewer.jsonl";
-  }
-
-  part def Pilot {
-    port control_out : ControlInterface;
-    attribute roles : String = "operator";
-    attribute launch : String = "human";
-    attribute cwd : String = ".";
-    attribute command : String = "python scripts/send_pilot_command.py";
+    attribute command : String = "python -m flight_viewer --source jsonl --path build/runs/sos4/truth.jsonl --sink rerun --spawn --scenario 3rd_party/airplane/resources/scenarios/test_scenario.json --realtime";
   }
 
   part def Builder {
@@ -159,17 +127,12 @@ package FederationSystem {
 
     part origin : FrameOrigin;
     part timing : Timing;
-    part overrides : FederationOverrides;
     part instances : AircraftInstance [4];
     part orchestrator : Orchestrator;
     part viewer : Viewer;
-    part pilot : Pilot;
     part builder : Builder;
     part artifacts : Artifacts;
 
-    connection telemetry_to_orchestrator connect instances.telemetry to orchestrator.telemetry_in;
-    connection rpr_recorder_loopback connect orchestrator.rpr_out to orchestrator.rpr_in;
-    connection telemetry_to_viewer connect instances.telemetry to viewer.telemetry_in;
-    connection pilot_control connect pilot.control_out to instances.control;
+    connection rpr_broadcast connect instances.telemetry to orchestrator.rpr_in;
   }
 }

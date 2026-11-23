@@ -4,20 +4,24 @@ This is project glue, not library code. It composes the pieces the workspace
 already owns:
 
 * the P2 federation manifest runner (``instance_manifest`` + ``Federation``)
-  launches the manifest's ``ssp4sim`` instances, each emitting telemetry JSON on
-  its own port (5510, 5512, ...);
-* one :class:`TelemetryRprPublisher` per instance converts that telemetry to the
-  shared ``EntityState`` model and publishes RPR payloads on UDP 5505;
-* :class:`RprTruthRecorder` subscribes that RPR stream, decodes with a shared
-  explicit ``RprOrigin``, and writes the recorder artifacts;
+  launches the manifest's ``ssp4sim`` instances; each instance's ``rpr_entity``
+  FMU binds its own local port (5510, 5512, ...) and broadcasts
+  ``rpr.v2.PhysicalEntity`` frames to the recorder on UDP 5505;
+* :class:`RprTruthRecorder` subscribes that one RPR stream, unwraps the
+  ``pyfmi_interop`` envelope, decodes the payload with the shared explicit
+  ``RprOrigin``, and writes the recorder artifacts.
 
 The dedicated RPR port is ``5505``; it is deliberately outside the instance
-port range 5510-5517. RPR has no timestamp field, so the recorder stamps each
-decoded frame from its per-entity ordinal at the bridge's 10 Hz cadence
-(``SAMPLE_PERIOD_S``) and fans samples in through :class:`pysos_interop.fanin.SampleFanIn`,
-whose watchdog flushes a partial sample instead of waiting forever for a missing
-entity. Aircraft stay peerless: each publisher reads only its own instance's
-telemetry, and the recorder is the sole fan-in point.
+bind port range 5510-5517. The ``rpr_entity`` FMU emits one
+``pyfmi_interop`` v2 wire frame per sample whose payload is the
+``rpr.v2.PhysicalEntity`` protobuf; the payload carries the entity identity, so
+all instances are distinguished on the single recorder socket. RPR has no
+timestamp field, so the recorder stamps each decoded frame from its per-entity
+ordinal at the FMU's 10 Hz cadence (``SAMPLE_PERIOD_S``) and fans samples in
+through :class:`pysos_interop.fanin.SampleFanIn`, whose watchdog flushes a
+partial sample instead of waiting forever for a missing entity. Aircraft stay
+peerless: each entity broadcasts only its own state, and the recorder is the
+sole fan-in point.
 
 Artifacts written under the run directory:
 
@@ -42,7 +46,6 @@ from __future__ import annotations
 
 import dataclasses
 import json
-import math
 import socket
 import sys
 import threading
@@ -64,36 +67,32 @@ if str(REPO_ROOT) not in sys.path:
 
 import instance_manifest
 import run_instances
+from pyfmi_interop import wire as wire_codec
 from pysos_coordinate import Federation
 from pysos_interop import (
     EntityKey,
     EntityState,
     TruthRecorder,
-    euler_rates_to_body_rates,
     export_measure_csv,
 )
 from pysos_interop.fanin import DEFAULT_WATCHDOG_S, SampleFanIn, sample_timestamp
 from pysos_interop.rerun_sink import recordings_to_rrd
-from pysos_interop.rpr import RprOrigin, decode_frame, encode_entity_state
-from pysos_interop.transport import Channel
+from pysos_interop.rpr import RprFrame, RprOrigin, decode_frame
 from pysos_interop.truth import MEASURE_UNITS, entity_slug, iter_truth
 
-from flight_viewer.geo import local_sim_to_enu
-from flight_viewer.sources.json_udp import parse_state_packets
-
-#: Dedicated RPR UDP port. Never overlaps the federation telemetry/control ports.
+#: Dedicated RPR UDP port. Never overlaps the federation instance bind ports.
 RPR_UDP_PORT = 5505
 
 #: Fixed simulated duration used by the acceptance run.
 DEFAULT_STOP_TIME_S = 6.0
 
-#: Bridge telemetry cadence: one packet per 0.1 s communication step.
+#: ``rpr_entity`` payload cadence: one frame per 0.1 s communication step.
 SAMPLE_PERIOD_S = 0.1
 
 #: How long a reader keeps draining after the stop signal before it exits.
 _DRAIN_S = 0.4
 
-#: Receive timeout for the telemetry and RPR sockets.
+#: Receive timeout for the RPR socket.
 _RECV_TIMEOUT_S = 0.05
 
 #: Requested socket receive buffer. Linux silently caps this at rmem_max, so
@@ -123,9 +122,9 @@ def _drain_burst(sock: socket.socket, first: bytes) -> list[bytes]:
     """Return *first* plus every datagram already queued behind it.
 
     Draining the kernel buffer before parsing/encoding keeps per-packet CPU
-    work off the receive path: a batch-mode federation emits its 10 Hz
-    telemetry in a burst, and a small default ``SO_RCVBUF`` overflows if the
-    consumer encodes each packet between receives.
+    work off the receive path: a batch-mode federation emits its 10 Hz RPR
+    frames in a burst, and a small default ``SO_RCVBUF`` overflows if the
+    consumer decodes each frame between receives.
     """
 
     datagrams = [first]
@@ -205,146 +204,26 @@ def load_origin(scenario_path: Path | str) -> RprOrigin:
     )
 
 
-def _yaw_unwrapped(previous: float, current: float) -> float:
-    return current + math.remainder(previous - current, 2.0 * math.pi)
+def decode_rpr_datagram(data: bytes, *, origin: RprOrigin) -> RprFrame:
+    """Unwrap one FMU datagram and decode its RPR payload.
 
-
-def telemetry_to_state(
-    packet: Mapping[str, Any],
-    *,
-    key: EntityKey,
-    marking: str,
-    timestamp: float,
-    period_s: float,
-    previous: tuple[tuple[float, float, float], tuple[float, float, float]] | None,
-) -> EntityState:
-    """Convert one normalised telemetry packet to an ``EntityState``.
-
-    Velocity and body angular velocity are finite differences over the
-    simulated cadence, not the host clock: in a fast run the packets arrive
-    almost simultaneously, so wall-clock differencing would be meaningless.
+    The ``rpr_entity`` FMU emits one ``pyfmi_interop`` v2 wire frame whose
+    payload is the ``rpr.v2.PhysicalEntity`` protobuf.  The envelope supplies
+    the model identity and the sending instance ordinal; the payload supplies
+    the entity identity, which is what distinguishes entities on the single
+    recorder socket.  Validation is therefore on the envelope and on the
+    declared payload format, not on a per-instance model id or origin: every
+    instance runs the same ``rpr_entity`` adapter and shares the federation
+    origin.
     """
 
-    position = local_sim_to_enu(*packet["state_m"])
-    orientation = tuple(math.radians(value) for value in packet["orientation_deg"])
-
-    velocity = (0.0, 0.0, 0.0)
-    angular = (0.0, 0.0, 0.0)
-    if previous is not None and period_s > 0.0:
-        previous_position, previous_orientation = previous
-        velocity = tuple(
-            (position[index] - previous_position[index]) / period_s for index in range(3)
+    encoded = wire_codec.decode(data)
+    if encoded.header.payload_format != wire_codec.PayloadFormat.PROTOBUF:
+        raise ValueError(
+            "RPR frame payload format "
+            f"{int(encoded.header.payload_format)} is not protobuf"
         )
-        euler_rate = (
-            (orientation[0] - previous_orientation[0]) / period_s,
-            (orientation[1] - previous_orientation[1]) / period_s,
-            (_yaw_unwrapped(previous_orientation[2], orientation[2]) - previous_orientation[2])
-            / period_s,
-        )
-        angular = euler_rates_to_body_rates(orientation, euler_rate)
-
-    return EntityState(
-        key=key,
-        timestamp=float(timestamp),
-        position_enu_m=position,
-        velocity_enu_mps=velocity,
-        orientation_rps=orientation,
-        angular_velocity_rps=angular,
-        marking=marking[:11],
-    )
-
-
-class TelemetryRprPublisher(threading.Thread):
-    """Subscribe one telemetry stream and republish it as RPR payloads."""
-
-    def __init__(
-        self,
-        *,
-        name: str,
-        telemetry_host: str,
-        telemetry_port: int,
-        key: EntityKey,
-        origin: RprOrigin,
-        rpr_host: str,
-        rpr_port: int,
-        sample_period_s: float = SAMPLE_PERIOD_S,
-        marking: str = "",
-    ) -> None:
-        super().__init__(name=name, daemon=True)
-        self.telemetry_host = telemetry_host
-        self.telemetry_port = int(telemetry_port)
-        self.key = key
-        self.origin = origin
-        self.marking = (marking or f"AC-{key.entity}")[:11]
-        self.rpr_host = rpr_host
-        self.rpr_port = int(rpr_port)
-        self.sample_period_s = float(sample_period_s)
-        self.stop_event = threading.Event()
-        self.ready = threading.Event()
-        #: Telemetry datagrams read off the UDP socket (pre-init record included).
-        self.telemetry_datagrams = 0
-        #: Telemetry records parsed out of those datagrams.
-        self.telemetry_packets = 0
-        #: Records published as RPR payloads.
-        self.sent = 0
-        self.error: BaseException | None = None
-        self.error_traceback = ""
-        self._ordinal = 0
-        self._previous: (
-            tuple[tuple[float, float, float], tuple[float, float, float]] | None
-        ) = None
-
-    def _next_state(self, packet: Mapping[str, Any]) -> EntityState:
-        """Return the state for one telemetry packet."""
-
-        state = telemetry_to_state(
-            packet,
-            key=self.key,
-            marking=self.marking,
-            timestamp=sample_timestamp(self._ordinal, self.sample_period_s),
-            period_s=self.sample_period_s,
-            previous=self._previous,
-        )
-        self._previous = (state.position_enu_m, state.orientation_rps)
-        self._ordinal += 1
-        self.sent += 1
-        return state
-
-    def run(self) -> None:  # pragma: no cover - exercised end to end
-        receiver: socket.socket | None = None
-        sender: Channel | None = None
-        try:
-            receiver = _open_receiver(self.telemetry_host, self.telemetry_port)
-            sender = Channel(self.rpr_host, self.rpr_port).open()
-            self.ready.set()
-
-            last_rx = time.monotonic()
-            while True:
-                try:
-                    data, _ = receiver.recvfrom(65535)
-                except TimeoutError:
-                    if self.stop_event.is_set() and time.monotonic() - last_rx > _DRAIN_S:
-                        break
-                    continue
-                last_rx = time.monotonic()
-                for datagram in _drain_burst(receiver, data):
-                    self.telemetry_datagrams += 1
-                    for packet in parse_state_packets(datagram.decode("utf-8", "replace")):
-                        self.telemetry_packets += 1
-                        sender.send(
-                            encode_entity_state(
-                                self._next_state(packet), origin=self.origin
-                            )
-                        )
-        except BaseException as exc:  # noqa: BLE001 - reported to the orchestrator
-            self.error = exc
-            self.error_traceback = traceback.format_exc()
-            self.ready.set()
-        finally:
-            if sender is not None:
-                sender.close()
-            if receiver is not None:
-                receiver.close()
+    return decode_frame(encoded.payload, origin=origin)
 
 
 class RprTruthRecorder(threading.Thread):
@@ -375,7 +254,12 @@ class RprTruthRecorder(threading.Thread):
         self.frames: dict[str, int] = defaultdict(int)
         #: RPR datagrams read off the recorder socket.
         self.datagrams = 0
+        #: Frames whose entity identity is the all-zero startup placeholder.
+        self.unidentified = 0
+        #: Datagrams the wire/RPR decoder rejected.
         self.decode_errors = 0
+        #: Actual bound UDP port (useful when constructed with ``port=0``).
+        self.bound_port: int | None = None
         self.recorder: TruthRecorder | None = None
         self.fan_in = SampleFanIn(
             self.expected_keys,
@@ -396,11 +280,12 @@ class RprTruthRecorder(threading.Thread):
         receiver: socket.socket | None = None
         try:
             receiver = _open_receiver(self.host, self.port)
+            self.bound_port = int(receiver.getsockname()[1])
             self.recorder = TruthRecorder(
                 self.truth_path,
                 run_id=self.run_id,
                 origin=self.origin.geo,
-                model_ids={slug: "airplane_ssp" for slug in self.expected_keys},
+                model_ids={slug: "rpr_entity" for slug in self.expected_keys},
                 sample_rate_hz=1.0 / self.sample_period_s,
             )
             self.ready.set()
@@ -418,11 +303,17 @@ class RprTruthRecorder(threading.Thread):
                 for datagram in _drain_burst(receiver, data):
                     self.datagrams += 1
                     try:
-                        frame = decode_frame(datagram, origin=self.origin)
+                        frame = decode_rpr_datagram(datagram, origin=self.origin)
                     except BaseException:
                         self.decode_errors += 1
                         raise
-                    slug = entity_slug(frame.state.key)
+                    key = frame.state.key
+                    if (key.site, key.application, key.entity) == (0, 0, 0):
+                        # The broadcaster publishes one frame before the
+                        # connected state has crossed the first step.
+                        self.unidentified += 1
+                        continue
+                    slug = entity_slug(key)
                     self.frames[slug] += 1
                     timestamp = sample_timestamp(self.fan_in.ordinals[slug], self.sample_period_s)
                     self.fan_in.observe(
@@ -465,8 +356,6 @@ class E2EResult:
     entities: dict[str, dict[str, Any]] = field(default_factory=dict)
     comparison: dict[str, Any] = field(default_factory=dict)
     partial_samples: int = 0
-    #: Per-publisher telemetry/send counters keyed by entity slug.
-    publishers: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: Recorder receive/decode counters plus any swallowed thread exception.
     recorder: dict[str, Any] = field(default_factory=dict)
     #: Kernel UDP counter delta observed across the run.
@@ -601,9 +490,9 @@ def write_separation_csv(csv_path: Path, out_csv: Path) -> Path:
 def separation_summary(csv_path: Path) -> dict[str, Any]:
     """Range statistics over the minimum pair separation in the measurement CSV.
 
-    The bridge emits one all-zero state at ``t = 0`` before the per-instance
-    initial offset applies, so that startup frame is reported separately and
-    excluded from the steady-state range.
+    The first frame of a run can predate the per-instance initial offset, so
+    that startup sample is reported separately and excluded from the
+    steady-state range.
     """
 
     import numpy as np
@@ -762,7 +651,7 @@ def run_e2e(
     realtime: bool = False,
     log: Any = print,
 ) -> E2EResult:
-    """Run an N-instance federation through the RPR publisher/recorder path."""
+    """Run an N-instance federation through the RPR broadcaster/recorder path."""
 
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -786,14 +675,14 @@ def run_e2e(
     spec = run_instances.apply_python(spec, interpreter)
 
     expected: dict[str, EntityKey] = {}
-    publishers: list[TelemetryRprPublisher] = []
     labels: dict[str, str] = {}
     entity_metadata: dict[str, dict[str, str]] = {}
+    instance_bind_ports: dict[str, int] = {}
     scenario_fallback = Path(scenario_path).stem
     for instance in spec.instances:
-        if len(instance.entities) != 1 or len(instance.telemetry) != 1:
+        if len(instance.entities) != 1:
             raise ValueError(
-                f"{instance.name}: e2e expects one entity and one telemetry endpoint"
+                f"{instance.name}: e2e expects exactly one entity"
             )
         ref = instance.entities[0]
         key = EntityKey(int(ref.site), int(ref.application), int(ref.entity))
@@ -808,19 +697,8 @@ def run_e2e(
             "marking": ref.marking,
             "label": label,
         }
-        endpoint = instance.telemetry[0]
-        publishers.append(
-            TelemetryRprPublisher(
-                name=f"rpr-publisher-{instance.name}",
-                telemetry_host=endpoint.host,
-                telemetry_port=endpoint.port,
-                key=key,
-                origin=origin,
-                marking=ref.marking,
-                rpr_host="127.0.0.1",
-                rpr_port=rpr_port,
-            )
-        )
+        if instance.telemetry:
+            instance_bind_ports[instance.name] = int(instance.telemetry[0].port)
 
     colors = {
         slug: _ENTITY_COLORS[index % len(_ENTITY_COLORS)]
@@ -849,23 +727,11 @@ def run_e2e(
     if recorder.error is not None:
         raise RuntimeError(f"RPR recorder failed to start: {recorder.error}")
 
-    for publisher in publishers:
-        publisher.start()
-    for publisher in publishers:
-        if not publisher.ready.wait(timeout=5.0):
-            raise RuntimeError(f"{publisher.name} did not bind its telemetry port")
-        if publisher.error is not None:
-            raise RuntimeError(f"{publisher.name} failed to start: {publisher.error}")
-
     log(f"federation {spec.name}: {len(spec.instances)} instances, stop {stop_time}s, origin {origin}")
     federation = Federation(spec, log_dir=logs_dir)
     try:
         result = federation.run()
     finally:
-        for publisher in publishers:
-            publisher.stop_event.set()
-        for publisher in publishers:
-            publisher.join(timeout=10.0)
         recorder.stop_event.set()
         recorder.join(timeout=20.0)
 
@@ -876,32 +742,17 @@ def run_e2e(
             key: kernel_after.get(key, 0) - kernel_before.get(key, 0)
             for key in sorted(set(kernel_before) | set(kernel_after))
         }
-    publisher_stats = {
-        entity_slug(publisher.key): {
-            "name": publisher.name,
-            "telemetry_port": publisher.telemetry_port,
-            "telemetry_datagrams": publisher.telemetry_datagrams,
-            "telemetry_packets": publisher.telemetry_packets,
-            "sent": publisher.sent,
-            "error": repr(publisher.error) if publisher.error is not None else None,
-            "error_traceback": publisher.error_traceback or None,
-        }
-        for publisher in publishers
-    }
     recorder_stats = {
         "datagrams": recorder.datagrams,
-        "sent": sum(publisher.sent for publisher in publishers),
-        "missing": sum(publisher.sent for publisher in publishers)
-        - recorder.datagrams,
         "frames": dict(recorder.frames),
         "decode_errors": recorder.decode_errors,
+        "unidentified": recorder.unidentified,
         "samples": recorder.samples,
         "partial_samples": int(recorder.fan_in.partial_samples),
         "error": repr(recorder.error) if recorder.error is not None else None,
         "error_traceback": recorder.error_traceback or None,
     }
     transport = {
-        "publishers": publisher_stats,
         "recorder": recorder_stats,
         "kernel_udp": kernel_udp,
     }
@@ -913,11 +764,11 @@ def run_e2e(
         thread_failures.append(
             f"RPR recorder failed: {recorder.error!r}\n{recorder.error_traceback}"
         )
-    for publisher in publishers:
-        if publisher.error is not None:
-            thread_failures.append(
-                f"{publisher.name} failed: {publisher.error!r}\n{publisher.error_traceback}"
-            )
+    if recorder.datagrams == 0:
+        thread_failures.append(
+            "no RPR frames reached the recorder "
+            f"(instance exit codes: {dict(result.exit_codes)}); see {logs_dir}"
+        )
     if thread_failures:
         (run_dir / "run.json").write_text(
             json.dumps(
@@ -984,7 +835,6 @@ def run_e2e(
         entities=entities,
         comparison=comparison,
         partial_samples=int(recorder.fan_in.partial_samples),
-        publishers=publisher_stats,
         recorder=recorder_stats,
         kernel_udp=kernel_udp,
     )
@@ -1001,10 +851,7 @@ def run_e2e(
             "altitude_m": origin.altitude_m,
         },
         "ports": {
-            "telemetry": {
-                instance.name: instance.telemetry[0].port
-                for instance in spec.instances
-            },
+            "instance_bind": instance_bind_ports,
             "rpr": rpr_port,
         },
         "exit_codes": e2e.exit_codes,
@@ -1013,7 +860,6 @@ def run_e2e(
         "samples": e2e.samples,
         "partial_samples": e2e.partial_samples,
         "transport": {
-            "publishers": e2e.publishers,
             "recorder": e2e.recorder,
             "kernel_udp": e2e.kernel_udp,
         },
@@ -1037,11 +883,11 @@ def run_e2e(
 
     log(f"artifacts: {run_dir}")
     log(f"samples: {e2e.samples}, frames: {e2e.frames}")
-    if e2e.recorder.get("missing", 0) or e2e.kernel_udp.get("RcvbufErrors", 0):
+    if e2e.recorder.get("decode_errors", 0) or e2e.kernel_udp.get("RcvbufErrors", 0):
         log(
-            "WARNING: UDP loss detected: "
-            f"rpr_sent={e2e.recorder['sent']} rpr_received={e2e.recorder['datagrams']} "
-            f"missing={e2e.recorder['missing']} "
+            "WARNING: RPR receive loss detected: "
+            f"received={e2e.recorder['datagrams']} "
+            f"decode_errors={e2e.recorder['decode_errors']} "
             f"kernel_rcvbuf_errors={e2e.kernel_udp.get('RcvbufErrors', 0)} "
             "(see transport in run.json)"
         )

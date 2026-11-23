@@ -10,14 +10,15 @@ Top-level workspace for running the airplane SSP and evolving the interactive si
 
 ## Just Works
 
-The supported live workflow is ROS-free: `ssp4sim` runs on the host and the Rerun viewer renders the bridge's UDP telemetry.
+The supported live workflow is ROS-free: `ssp4sim` runs on the host, the aircraft SSP broadcasts RPR entity state to the recorder on UDP 5505, and the Rerun viewer replays the recorder's truth stream.
 
 ```bash
 ./scripts/build_airplane.py
 ./scripts/run_rerun_stack.sh
 ```
 
-`run_rerun_stack.sh` starts `./scripts/run_airplane_scenario.py --realtime`, waits for the realtime telemetry file to advance, then runs `python -m flight_viewer --source json-udp --sink rerun --spawn` with the repo venv.
+`run_rerun_stack.sh` starts the realtime run, waits for the run artifacts to advance, then replays `build/runs/<run>/truth.jsonl` with
+`python -m flight_viewer --source jsonl --sink rerun --spawn`.
 
 To run the viewer inside Podman instead of on the host, build the image and opt in:
 
@@ -40,11 +41,10 @@ Other useful entry points:
 - Run the two-instance federation through `pysos_coordinate` (validate first with `--dry-run`): `./scripts/run_instances.py --instances 2`
 - Regenerate the checked-in federation manifest from the scenario settings: `./scripts/generate_instance_manifest.py`
 - Headless Rerun smoke test (no X11, no Podman): `./scripts/container_rerun_smoke.sh`
-- Manual pilot input on UDP 5502: `./scripts/send_pilot_command.py --pitch 0.2 --duration 5`
 - Read the workflow notes: `docs/simulation_workflow.md`
 
 ## Interactive Direction
 
-The supported live setup keeps `ssp4sim` as the simulation master on the host. The native bridge FMU still emits newline-delimited JSON telemetry on UDP 5501; `flight_viewer` consumes it and renders with Rerun. Manual pilot commands go to UDP 5502 through `scripts/send_pilot_command.py`.
+The supported live setup keeps `ssp4sim` as the simulation master on the host. Every aircraft broadcasts its own RPR entity-state packets to the recorder on UDP 5505; the recorder writes `truth.jsonl`, `measurements.csv` and `recording.rrd`, and `flight_viewer` replays the truth stream with Rerun.
 
-The RViz runtime has been retired. The live stack is the Rerun viewer described above; the native `UdpBridge` FMU keeps its unchanged UDP telemetry/control contract. The viewer's default path is JSON telemetry over UDP; DIS is an optional codec from `pysos_interop`.
+There is no live JSON telemetry/control bridge and no pilot shim. The RViz runtime has been retired; the live stack is the Rerun viewer replaying the recorder output.

@@ -17,13 +17,28 @@
         "--offset-north-km",
         "0.0",
         "--offset-east-km",
-        "0.0"
+        "0.0",
+        "--waypoint-frame",
+        "federation",
+        "--reference-latitude-deg",
+        "-2.957519",
+        "--reference-longitude-deg",
+        "39.232955",
+        "--reference-altitude-m",
+        "0.0",
+        "--entity-site",
+        "1",
+        "--entity-application",
+        "1",
+        "--entity",
+        "1",
+        "--marking",
+        ""
       ],
       "cwd": ".",
       "env": {
         "PYSOS_SCENARIO": "test_scenario",
-        "PYSOS_TELEMETRY_PORT": "5510",
-        "PYSOS_CONTROL_PORT": "5511"
+        "PYSOS_TELEMETRY_PORT": "5510"
       },
       "entities": [
         {
@@ -39,12 +54,7 @@
           "port": 5510
         }
       ],
-      "control": [
-        {
-          "host": "127.0.0.1",
-          "port": 5511
-        }
-      ],
+      "control": [],
       "startup_timeout": 30.0
     },
     {
@@ -61,13 +71,28 @@
         "--offset-north-km",
         "0.0",
         "--offset-east-km",
-        "5.0"
+        "5.0",
+        "--waypoint-frame",
+        "federation",
+        "--reference-latitude-deg",
+        "-2.957519",
+        "--reference-longitude-deg",
+        "39.232955",
+        "--reference-altitude-m",
+        "0.0",
+        "--entity-site",
+        "1",
+        "--entity-application",
+        "1",
+        "--entity",
+        "2",
+        "--marking",
+        ""
       ],
       "cwd": ".",
       "env": {
         "PYSOS_SCENARIO": "test_scenario",
-        "PYSOS_TELEMETRY_PORT": "5512",
-        "PYSOS_CONTROL_PORT": "5513"
+        "PYSOS_TELEMETRY_PORT": "5512"
       },
       "entities": [
         {
@@ -83,12 +108,7 @@
           "port": 5512
         }
       ],
-      "control": [
-        {
-          "host": "127.0.0.1",
-          "port": 5513
-        }
-      ],
+      "control": [],
       "startup_timeout": 30.0
     }
   ]

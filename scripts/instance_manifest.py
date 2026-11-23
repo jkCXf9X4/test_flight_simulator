@@ -3,8 +3,10 @@
 The manifest schema is owned by ``pysos_coordinate``
 (``docs/breakdown/02-architecture/manifest.md`` there). This module only
 translates project settings — instance count, interpreter, SSP bundle paths,
-ports, and the 5 km east offset — into that schema. It has no supervisor of its
-own: ``run_instances.py`` hands the resulting ``FederationSpec`` to
+RPR bind ports, the 5 km east offset, the federation reference origin, and the
+entity identity — into that schema. Control endpoints are retired, so every
+instance records ``control: []``. It has no supervisor of its own:
+``run_instances.py`` hands the resulting ``FederationSpec`` to
 ``pysos_coordinate.Federation``.
 """
 
@@ -62,6 +64,21 @@ def _scenario_key(scenario_path: Path | str) -> str:
     return Path(scenario_path).stem
 
 
+def _scenario_origin(scenario_path: Path | str) -> tuple[float, float, float]:
+    """``points[0]`` — the federation origin the instance wires into its state."""
+
+    data = json.loads(Path(scenario_path).read_text(encoding="utf-8"))
+    points = data.get("points") or []
+    if not points:
+        raise ValueError(f"{scenario_path}: scenario has no points")
+    point = points[0]
+    return (
+        float(point.get("latitude_deg", 0.0)),
+        float(point.get("longitude_deg", 0.0)),
+        float(point.get("altitude_m", 0.0)),
+    )
+
+
 def build_spec(
     *,
     instances: int = 2,
@@ -79,9 +96,11 @@ def build_spec(
         raise ValueError(f"instances must be >= 1, got {instances}")
     federation_name = name or _scenario_name(scenario_path)
     scenario_key = _scenario_key(scenario_path)
+    latitude_deg, longitude_deg, altitude_m = _scenario_origin(scenario_path)
     specs: list[InstanceSpec] = []
     for index in range(1, instances + 1):
         defaults = instance_defaults(index)
+        marking = ""
         command = [
             str(python),
             LAUNCH_SCRIPT,
@@ -95,6 +114,22 @@ def build_spec(
             str(float(defaults["offset_north_km"])),
             "--offset-east-km",
             str(float(defaults["offset_east_km"])),
+            "--waypoint-frame",
+            "federation",
+            "--reference-latitude-deg",
+            str(latitude_deg),
+            "--reference-longitude-deg",
+            str(longitude_deg),
+            "--reference-altitude-m",
+            str(altitude_m),
+            "--entity-site",
+            ENTITY_SITE,
+            "--entity-application",
+            ENTITY_APPLICATION,
+            "--entity",
+            str(index),
+            "--marking",
+            marking,
         ]
         if stop_time is not None:
             command += ["--stop-time", str(float(stop_time))]
@@ -108,17 +143,17 @@ def build_spec(
                 env={
                     "PYSOS_SCENARIO": scenario_key,
                     "PYSOS_TELEMETRY_PORT": str(int(defaults["telemetry_port"])),
-                    "PYSOS_CONTROL_PORT": str(int(defaults["control_port"])),
                 },
                 entities=[
                     EntityRef(
                         site=ENTITY_SITE,
                         application=ENTITY_APPLICATION,
                         entity=str(index),
+                        marking=marking,
                     )
                 ],
                 telemetry=[Endpoint.udp(int(defaults["telemetry_port"]))],
-                control=[Endpoint.udp(int(defaults["control_port"]))],
+                control=[],
             )
         )
     return FederationSpec(name=federation_name, instances=specs).validate()

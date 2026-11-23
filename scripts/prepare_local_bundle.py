@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Create a stable local SSP/config bundle for repeated simulation runs."""
 
 from __future__ import annotations
@@ -16,8 +15,14 @@ if str(AIRPLANE_ROOT) not in sys.path:
     sys.path.insert(0, str(AIRPLANE_ROOT))
 
 from scripts.lib.scenarios.packaging import package_ssp_with_parameters
-from scripts.lib.scenarios.preparation import estimate_duration, prepare_scenario_for_simulation
-from scripts.lib.scenarios.runtime import create_simulation_config, write_simulation_config
+from scripts.lib.scenarios.preparation import (
+    estimate_duration,
+    prepare_scenario_for_simulation,
+)
+from scripts.lib.scenarios.runtime import (
+    create_simulation_config,
+    write_simulation_config,
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -45,11 +50,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=REPO_ROOT / "build" / "results",
         help="Directory referenced by the generated simulator configs for result CSV output.",
-    )
-    parser.add_argument(
-        "--bridge-input",
-        action="store_true",
-        help="Enable bridge/manual input in the packaged local SSP.",
     )
     return parser.parse_args(argv)
 
@@ -83,8 +83,6 @@ def main(argv: list[str] | None = None) -> int:
     local_prepared_ssp_path = bundle_dir / "scenario.ssp"
     local_config_path = bundle_dir / "config.json"
     local_realtime_config_path = bundle_dir / "config.realtime.json"
-    result_file = results_dir / "scenario_results.csv"
-    realtime_result_file = results_dir / "scenario_results_realtime.csv"
     config_ssp_path = Path("build/ssp/scenario.ssp")
     config_result_path = Path("build/results/scenario_results.csv")
     config_realtime_result_path = Path("build/results/scenario_results_realtime.csv")
@@ -95,7 +93,6 @@ def main(argv: list[str] | None = None) -> int:
     prepared = prepare_scenario_for_simulation(
         scenario_path=local_scenario_path,
         results_dir=bundle_dir,
-        bridge_input=args.bridge_input,
     )
 
     generated_prepared_ssp = package_ssp_with_parameters(

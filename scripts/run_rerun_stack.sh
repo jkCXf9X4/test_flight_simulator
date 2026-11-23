@@ -2,10 +2,12 @@
 
 # Host-side launcher for the ROS-free stack.
 #
-# The simulation always runs on the host. The flight_viewer/Rerun frontend runs
-# either on the host with the repo venv (default) or inside the Rerun Podman
-# image when RERUN_CONTAINER=1. The container uses host networking so it can
-# receive the bridge's UDP telemetry on 127.0.0.1:5501.
+# The federation runs on the host and records an RPR truth stream through
+# scripts/run_e2e_rpr.py. There is no JSON telemetry port: each aircraft's
+# rpr_entity FMU broadcasts directly to the recorder on 127.0.0.1:5505, and the
+# viewer replays the recorder's truth.jsonl. The flight_viewer/Rerun frontend
+# runs either on the host with the repo venv (default) or inside the Rerun
+# Podman image when RERUN_CONTAINER=1.
 #
 # RERUN_WEB=1 swaps the native viewer window for the Rerun web viewer, fed
 # over gRPC and opened in a dedicated Chrome instance that enables the
@@ -18,9 +20,9 @@ IMAGE_NAME="${IMAGE_NAME:-test-flight-simulator-rerun:latest}"
 CONTAINER_NAME="${CONTAINER_NAME:-test-flight-simulator-rerun}"
 RERUN_CONTAINER="${RERUN_CONTAINER:-0}"
 SCENARIO_PATH="${SCENARIO_PATH:-3rd_party/airplane/resources/scenarios/test_scenario.json}"
-RECORD_PATH="${RECORD_PATH:-build/results/flight_viewer.jsonl}"
-TELEMETRY_CSV="${TELEMETRY_CSV:-$REPO_ROOT/build/results/scenario_results_realtime.csv}"
-SIM_READY_TIMEOUT="${SIM_READY_TIMEOUT:-30}"
+RUN_DIR="${RUN_DIR:-build/results/e2e}"
+TRUTH_PATH="${TRUTH_PATH:-$RUN_DIR/truth.jsonl}"
+STOP_TIME="${STOP_TIME:-30.0}"
 XAUTHORITY_PATH="${XAUTHORITY:-$HOME/.Xauthority}"
 RERUN_WEB="${RERUN_WEB:-0}"
 RERUN_WEB_PORT="${RERUN_WEB_PORT:-9090}"
@@ -39,8 +41,8 @@ fail() {
   exit 1
 }
 
-if [[ ! -f "$REPO_ROOT/build/ssp/config.realtime.json" ]]; then
-  fail "Local realtime config not found: build/ssp/config.realtime.json. Run ./scripts/build_airplane.py first."
+if [[ ! -f "$REPO_ROOT/build/ssp/scenario.ssp" ]]; then
+  fail "Prepared airplane SSP not found: build/ssp/scenario.ssp. Run ./scripts/build_airplane.py first."
 fi
 
 if [[ ! -f "$REPO_ROOT/$SCENARIO_PATH" ]]; then
@@ -84,29 +86,8 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# Wait for this run's telemetry instead of a blind sleep. The realtime config
-# truncates and rewrites the CSV, so a fresh mtime plus non-zero size means the
-# master loop is advancing (and the bridge is emitting on UDP 5501).
-wait_for_telemetry() {
-  local start_epoch deadline mtime
-  start_epoch="$(date +%s)"
-  deadline=$((start_epoch + SIM_READY_TIMEOUT))
-  while (( $(date +%s) <= deadline )); do
-    if ! kill -0 "$SIM_PID" >/dev/null 2>&1; then
-      echo "Simulation exited before telemetry was ready." >&2
-      return 1
-    fi
-    if [[ -s "$TELEMETRY_CSV" ]]; then
-      mtime="$(stat -c %Y "$TELEMETRY_CSV" 2>/dev/null || echo 0)"
-      if (( mtime >= start_epoch )); then
-        return 0
-      fi
-    fi
-    sleep 0.25
-  done
-  echo "Timed out after ${SIM_READY_TIMEOUT}s waiting for $TELEMETRY_CSV." >&2
-  return 1
-}
+# The federation is synchronous: run_e2e_rpr writes truth.jsonl and run.json
+# when the recorder closes. Wait for it, then replay the recorder's truth stream.
 
 # RERUN_WEB support: find a browser that can run the web viewer.
 
@@ -163,21 +144,32 @@ if [[ -z "$PYTHON" ]]; then
   fi
 fi
 
-echo "Starting simulation (realtime) ..."
+echo "Starting federation (realtime) ..."
 (
   cd "$REPO_ROOT"
-  exec setsid "$PYTHON" ./scripts/run_airplane_scenario.py --realtime
+  exec setsid "$PYTHON" ./scripts/run_e2e_rpr.py \
+    --realtime \
+    --stop-time "$STOP_TIME" \
+    --run-dir "$RUN_DIR" \
+    --scenario "$SCENARIO_PATH"
 ) &
 SIM_PID=$!
 
-echo "Waiting for telemetry ..."
-wait_for_telemetry
+echo "Waiting for the federation to write its RPR recording ..."
+if ! wait "$SIM_PID"; then
+  SIM_PID=""
+  fail "Federation run failed; see $RUN_DIR/run.json and $RUN_DIR/logs."
+fi
+SIM_PID=""
+[[ -s "$REPO_ROOT/$TRUTH_PATH" ]] || fail "Recorder wrote no truth stream at $TRUTH_PATH."
+[[ -f "$REPO_ROOT/$RUN_DIR/run.json" ]] || fail "Federation wrote no $RUN_DIR/run.json."
 
 VIEWER_ARGS=(
-  --source json-udp
+  --source jsonl
+  --path "$TRUTH_PATH"
   --sink rerun
   --scenario "$SCENARIO_PATH"
-  --record "$RECORD_PATH"
+  --realtime
 )
 
 if [[ "$RERUN_WEB" == "1" ]]; then

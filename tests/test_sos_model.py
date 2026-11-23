@@ -94,39 +94,44 @@ def test_host_port_collision_is_reported():
 
 def test_every_telemetry_port_feeds_a_modelled_flow():
     model = _model()
-    flows = tuple(
-        flow
-        for flow in model.flows
-        if flow.name not in {"telemetry_to_orchestrator", "telemetry_to_viewer"}
-    )
+    flows = tuple(flow for flow in model.flows if flow.name != "rpr_broadcast")
 
     problems = sos_model.check(_manifest(), replace(model, flows=flows))
 
     assert any("red_interceptor: telemetry port 5510 feeds no modelled flow" in item for item in problems)
 
 
-def test_every_control_port_has_a_producer():
+def test_control_is_not_modelled():
     model = _model()
-    flows = tuple(flow for flow in model.flows if flow.name != "pilot_control")
 
-    problems = sos_model.check(_manifest(), replace(model, flows=flows))
+    assert all("control" not in process.ports for process in model.processes)
+    assert [flow.encoding for flow in model.flows] == ["rpr"]
+    assert model.flows[0].target == "orchestrator/rpr_in"
 
-    assert any("blue_baseline: control port 5517 has no modelled producer" in item for item in problems)
 
-
-def test_viewer_telemetry_must_match_the_manifest():
+def test_viewer_replays_the_recorder_truth_stream():
     model = _model()
     viewer = model.process("viewer")
     assert viewer is not None
     command = list(viewer.command)
-    command[command.index("5512:2")] = "5512:9"
+    command[command.index("--path") + 1] = "build/runs/other/truth.jsonl"
 
     problems = sos_model.check(
         _manifest(),
         replace(model, processes=tuple(replace(viewer, command=tuple(command)) if item.name == "viewer" else item for item in model.processes)),
     )
 
-    assert any("processes.viewer: --telemetry" in item for item in problems)
+    assert any("processes.viewer: --path" in item for item in problems)
+
+
+def test_identity_args_must_match_the_manifest():
+    manifest = _manifest()
+    argv = _instance(manifest, "blue_cas")["command"]
+    argv[argv.index("--marking") + 1] = "RED-9"
+
+    problems = sos_model.check(manifest, _model())
+
+    assert any("blue_cas: --marking 'RED-9' != manifest entity marking 'BLUE-1'" in item for item in problems)
 
 
 def test_federation_and_timing_must_match_the_manifest():
@@ -196,7 +201,7 @@ def test_built_aircraft_matches_the_model():
 def test_aircraft_component_drift_is_reported():
     model = _model()
     components = tuple(
-        replace(component, fmu="Renamed.fmu") if component.name == "udp_bridge" else component
+        replace(component, fmu="Renamed.fmu") if component.name == "rpr_entity" else component
         for component in model.aircraft.components
     )
 
@@ -206,7 +211,7 @@ def test_aircraft_component_drift_is_reported():
         artifacts=True,
     )
 
-    assert any("udp_bridge" in item and "Renamed.fmu" in item for item in problems)
+    assert any("rpr_entity" in item and "Renamed.fmu" in item for item in problems)
     assert any("resources/Renamed.fmu is missing" in item for item in problems)
 
 
@@ -214,7 +219,7 @@ def test_aircraft_component_drift_is_reported():
 def test_aircraft_connection_drift_is_reported():
     model = _model()
     wires = tuple(
-        replace(wire, target_port="nowhere") if wire.source == "udp_bridge" else wire
+        replace(wire, target_port="nowhere") if wire.source == "rpr_state_source" else wire
         for wire in model.aircraft.wires
     )
 
@@ -224,14 +229,31 @@ def test_aircraft_connection_drift_is_reported():
         artifacts=True,
     )
 
-    assert any("udp_bridge.pilotCommand -> control_interface.nowhere" in item for item in problems)
+    assert any(
+        "rpr_state_source.entityState -> rpr_entity.nowhere" in item for item in problems
+    )
 
 
 @requires_built_aircraft
-def test_bridge_input_flag_must_match_the_built_scenario():
-    problems = sos_model.check(_manifest(), replace(_model(), bridge_input=True), artifacts=True)
+def test_rpr_deployment_defaults_must_match_the_built_scenario():
+    model = _model()
+    components = tuple(
+        replace(
+            component,
+            parameters={**component.parameters, "transport": ("String", "udp")},
+        )
+        if component.name == "rpr_entity"
+        else component
+        for component in model.aircraft.components
+    )
 
-    assert any("useBridgeInput" in item and "true" in item for item in problems)
+    problems = sos_model.check(
+        _manifest(),
+        replace(model, aircraft=replace(model.aircraft, components=components)),
+        artifacts=True,
+    )
+
+    assert any("rpr_entity.transport" in item and "loopback" in item for item in problems)
 
 
 def test_missing_artifacts_fail_only_when_required():
@@ -253,9 +275,13 @@ def test_system_plane_imports_the_airplane_architecture():
 
     assert architecture.is_file()
     assert "package Aircraft" in architecture.read_text(encoding="utf-8")
-    assert len(model.aircraft.components) == 10
-    assert len(model.aircraft.wires) == 24
-    assert "part def UdpBridge" not in MODEL_PATH.read_text(encoding="utf-8")
+    assert len(model.aircraft.components) == 11
+    assert len(model.aircraft.wires) == 23
+    model_text = MODEL_PATH.read_text(encoding="utf-8")
+    assert "part def UdpBridge" not in model_text
+    assert "part def Pilot" not in model_text
+    assert "ControlInterface" not in model_text
+    assert "encoding : String = \"rpr\"" in model_text
 
 
 def test_missing_reference_origin_is_reported():
@@ -270,7 +296,7 @@ def test_missing_reference_origin_is_reported():
 
 
 @requires_built_aircraft
-def test_reference_origin_and_bridge_input_land_in_the_instance_bundle(tmp_path):
+def test_rpr_identity_and_reference_origin_land_in_the_instance_bundle(tmp_path):
     summary = prepare_instance_bundle.prepare_instance(
         2,
         SCENARIO_SSP,
@@ -280,21 +306,34 @@ def test_reference_origin_and_bridge_input_land_in_the_instance_bundle(tmp_path)
         reference_altitude_m=0.0,
         waypoint_frame="federation",
         stop_time=120.0,
+        entity_site="1",
+        entity_application="1",
+        entity="2",
+        marking="RED-2",
     )
 
     with zipfile.ZipFile(summary["ssp"]) as archive:
         ssv = archive.read("resources/MissionScenario.ssv").decode("utf-8")
         ssm = archive.read("resources/HighAltitudeIntercept.ssm").decode("utf-8")
 
-    assert 'name="udp_bridge.reference_latitude_deg"' in ssv
+    assert 'name="rpr_entity.bind_address"' in ssv
+    assert "127.0.0.1:5512" in ssv
+    assert 'name="rpr_entity.peer_address"' in ssv
+    assert "127.0.0.1:5505" in ssv
+    assert 'name="rpr_state_source.reference_latitude_deg"' in ssv
     assert "-2.957519000" in ssv
-    assert 'name="udp_bridge.reference_longitude_deg"' in ssv
+    assert 'name="rpr_state_source.reference_longitude_deg"' in ssv
     assert "39.232955000" in ssv
-    assert 'name="useBridgeInput"' in ssv
-    assert 'target="control_interface.useBridgeInput"' in ssm
-    assert 'target="udp_bridge.reference_altitude_m"' in ssm
+    assert 'name="rpr_state_source.entity_entity"' in ssv
+    assert 'name="rpr_state_source.marking_characters"' in ssv
+    assert "RED-2" in ssv
+    assert 'target="rpr_entity.bind_address"' in ssm
+    assert 'target="rpr_state_source.reference_altitude_m"' in ssm
+    assert "useBridgeInput" not in ssv
     assert summary["waypoint_frame"] == "federation"
-    assert summary["bridge_input"] == "false"
+    assert summary["rpr_bind_address"] == "127.0.0.1:5512"
+    assert summary["entity"] == "1/1/2"
+    assert summary["marking"] == "RED-2"
 
 
 def test_system_plane_must_import_the_architecture(tmp_path):

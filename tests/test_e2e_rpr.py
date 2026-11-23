@@ -1,8 +1,11 @@
-"""End-to-end acceptance for the telemetry -> RPR -> recorder -> artifacts path.
+"""End-to-end acceptance for the RPR broadcast -> recorder -> artifacts path.
 
 Skipped when the airplane bundle is missing or a federation/RPR port is already
-in use. The test is otherwise a live run: two instances, a fixed simulated
-duration, the real UDP path, and the real Rerun and pyssp_vv consumers.
+in use. The live tests are two instances and four instances, a fixed simulated
+duration, the real UDP path, and the real Rerun and pyssp_vv consumers. The
+per-datagram tests below run without the airplane bundle: they prove the
+recorder accepts the ``rpr_entity`` FMU's wire-wrapped ``PhysicalEntity``
+frames over UDP and distinguishes entities by their payload identity.
 """
 
 from __future__ import annotations
@@ -13,11 +16,17 @@ import math
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
-import instance_manifest
 import pytest
 import rpr_e2e
+from pyfmi_interop.ir import ModelDefinition
+from pyfmi_interop.wire import PayloadFormat
+from pyfmi_interop.wire import encode as encode_wire_frame
+from pysos_interop import EntityKey, EntityState
+from pysos_interop.rpr import RprOrigin, encode_entity_state
+from pysos_interop.truth import entity_slug, iter_truth
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCENARIO_SSP = REPO_ROOT / "build" / "ssp" / "scenario.ssp"
@@ -39,6 +48,7 @@ def _skip_reason() -> str | None:
     if not SCENARIO_SSP.is_file():
         return f"missing prepared bundle: {SCENARIO_SSP}"
     try:
+        import pyfmi_interop  # noqa: F401
         import pysos_rpr  # noqa: F401
         import pyssp_vv  # noqa: F401
         import rerun  # noqa: F401
@@ -203,117 +213,140 @@ def test_four_aircraft_federation_runs_distinct_scenarios(tmp_path):
 
     summary = json.loads(result.run_json.read_text(encoding="utf-8"))
     transport = summary["transport"]
-    assert set(transport["publishers"]) == slugs
     assert transport["recorder"]["error"] is None
-    for stats in transport["publishers"].values():
-        assert stats["error"] is None
-        assert stats["telemetry_datagrams"] >= stats["sent"] >= 0
+    assert transport["recorder"]["decode_errors"] == 0
     assert transport["recorder"]["datagrams"] >= sum(
         transport["recorder"]["frames"].values()
     )
+    assert set(transport["recorder"]["frames"]) == slugs
     assert {"InDatagrams", "RcvbufErrors"} <= set(transport["kernel_udp"])
+    assert set(summary["ports"]["instance_bind"]) == {
+        "red_interceptor",
+        "red_striker",
+        "blue_cas",
+        "blue_baseline",
+    }
+    assert summary["ports"]["rpr"] == rpr_e2e.RPR_UDP_PORT
 
     lengths = [item["path_length_m"] for item in result.entities.values()]
     assert all(length > 100.0 for length in lengths)
     assert len({round(length, 3) for length in lengths}) == 4
 
 
-def _telemetry_packet(
+ORIGIN = RprOrigin(latitude_deg=0.0, longitude_deg=0.0, altitude_m=0.0)
+ADAPTER_MODEL = ModelDefinition(
+    name="rpr_entity",
+    guid="0123456789abcdef0123456789abcdef",
+    step_size_s=0.1,
+)
+
+
+def _state(entity: int, *, east_m: float = 0.0, marking: str = "") -> EntityState:
+    """One entity state to encode as the FMU would broadcast it."""
+
+    return EntityState(
+        key=EntityKey(1, 1, entity),
+        timestamp=0.0,
+        position_enu_m=(east_m, 0.0, 1000.0),
+        velocity_enu_mps=(0.0, 0.0, 0.0),
+        orientation_rps=(0.0, 0.0, 0.0),
+        angular_velocity_rps=(0.0, 0.0, 0.0),
+        marking=marking or f"AC-{entity}",
+    )
+
+
+def _fmu_frame(
+    state: EntityState,
     *,
-    position_m=(0.0, 0.0, 0.0),
-    airspeed_mps=0.0,
-    climb_rate=0.0,
-    distance_to_waypoint_km=0.0,
-    waypoint_index=0,
-    total_waypoints=0,
-    arrived=False,
-    complete=False,
-):
-    """Build one normalised bridge telemetry packet for publisher tests."""
+    instance: int = 1,
+    sequence: int = 0,
+    payload_format: PayloadFormat = PayloadFormat.PROTOBUF,
+) -> bytes:
+    """Encode one ``rpr_entity`` FMU datagram: v2 envelope + PhysicalEntity."""
 
-    return {
-        "state_m": tuple(float(value) for value in position_m),
-        "orientation_deg": (0.0, 0.0, 0.0),
-        "flight_status": {
-            "airspeed_mps": float(airspeed_mps),
-            "climb_rate": float(climb_rate),
-        },
-        "mission_status": {
-            "waypoint_index": int(waypoint_index),
-            "total_waypoints": int(total_waypoints),
-            "distance_to_waypoint_km": float(distance_to_waypoint_km),
-            "arrived": bool(arrived),
-            "complete": bool(complete),
-        },
+    return encode_wire_frame(
+        ADAPTER_MODEL,
+        encode_entity_state(state, origin=ORIGIN),
+        instance=instance,
+        sequence=sequence,
+        timestamp_ns=0,
+        payload_format=payload_format,
+    )
+
+
+def test_decode_rpr_datagram_unwraps_fmu_wire_envelope():
+    frame = _fmu_frame(_state(3, east_m=12.5, marking="RED-1"))
+
+    decoded = rpr_e2e.decode_rpr_datagram(frame, origin=ORIGIN)
+
+    assert decoded.state.key == EntityKey(1, 1, 3)
+    assert decoded.state.marking == "RED-1"
+    assert decoded.state.position_enu_m == pytest.approx((12.5, 0.0, 1000.0))
+
+
+def test_decode_rpr_datagram_rejects_non_protobuf_payload():
+    frame = _fmu_frame(_state(1), payload_format=PayloadFormat.OPAQUE)
+
+    with pytest.raises(ValueError, match="not protobuf"):
+        rpr_e2e.decode_rpr_datagram(frame, origin=ORIGIN)
+
+
+def test_recorder_reads_wire_frames_from_two_broadcasters(tmp_path):
+    """Two entities, one socket: payload identity separates them."""
+
+    truth_path = tmp_path / "truth.jsonl"
+    expected = {
+        entity_slug(key): key for key in (EntityKey(1, 1, 1), EntityKey(1, 1, 2))
     }
-
-
-def _publisher(marking=""):
-    return rpr_e2e.TelemetryRprPublisher(
-        name="test-publisher",
-        telemetry_host="127.0.0.1",
-        telemetry_port=0,
-        key=rpr_e2e.EntityKey(1, 1, 1),
-        origin=rpr_e2e.RprOrigin(latitude_deg=0.0, longitude_deg=0.0, altitude_m=0.0),
-        rpr_host="127.0.0.1",
-        rpr_port=0,
-        marking=marking,
+    recorder = rpr_e2e.RprTruthRecorder(
+        host="127.0.0.1",
+        port=0,
+        origin=ORIGIN,
+        expected_keys=expected,
+        truth_path=truth_path,
+        run_id="wire-test",
+        sample_period_s=0.02,
+        watchdog_s=0.05,
     )
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        recorder.start()
+        assert recorder.ready.wait(timeout=3.0)
+        assert recorder.error is None
+        assert recorder.bound_port is not None
+        for sequence in range(3):
+            sender.sendto(
+                _fmu_frame(_state(1, east_m=sequence), instance=1, sequence=sequence),
+                ("127.0.0.1", recorder.bound_port),
+            )
+            sender.sendto(
+                _fmu_frame(_state(2, east_m=sequence), instance=2, sequence=sequence),
+                ("127.0.0.1", recorder.bound_port),
+            )
+        time.sleep(0.1)
+    finally:
+        recorder.stop_event.set()
+        recorder.join(timeout=5.0)
+        sender.close()
 
+    assert recorder.error is None, recorder.error_traceback
+    assert recorder.datagrams == 6
+    assert recorder.decode_errors == 0
+    assert dict(recorder.frames) == {"1_1_1": 3, "1_1_2": 3}
+    assert recorder.samples == 3
 
-def _roundtrip_marking(publisher):
-    state = publisher._next_state(
-        _telemetry_packet(position_m=(100.0, 0.0, 1000.0))
-    )
-    data = rpr_e2e.encode_entity_state(state, origin=publisher.origin)
-    return rpr_e2e.decode_frame(data, origin=publisher.origin).state.marking
+    states = list(iter_truth(truth_path))
+    assert len(states) == 6
+    assert {(state.key.site, state.key.application, state.key.entity) for state in states} == {
+        (1, 1, 1),
+        (1, 1, 2),
+    }
+    assert {state.timestamp for state in states} == {0.0, 0.02, 0.04}
+    assert {state.marking for state in states} == {"AC-1", "AC-2"}
 
-
-def test_publisher_publishes_legit_nonzero_first_packet_unchanged():
-    packet = _telemetry_packet(
-        position_m=(0.0, 0.0, 1200.0),
-        airspeed_mps=45.0,
-        climb_rate=-1.0,
-        distance_to_waypoint_km=8.0,
-        waypoint_index=2,
-        total_waypoints=6,
-    )
-
-    state = _publisher()._next_state(packet)
-
-    assert state.timestamp == 0.0
-    assert state.position_enu_m == pytest.approx((0.0, 0.0, 1200.0))
-    assert state.velocity_enu_mps == (0.0, 0.0, 0.0)
-
-
-def test_publisher_does_not_drop_all_zero_packet_after_publication():
-    publisher = _publisher()
-    first = publisher._next_state(
-        _telemetry_packet(position_m=(100.0, 0.0, 1000.0), airspeed_mps=50.0)
-    )
-    assert first.timestamp == 0.0
-
-    zero_after = publisher._next_state(_telemetry_packet())
-
-    assert zero_after.timestamp == pytest.approx(0.1)
-    assert zero_after.position_enu_m == (0.0, 0.0, 0.0)
-
-
-def test_publisher_uses_manifest_marking_in_encoded_frame():
-    spec = instance_manifest.load_spec(SOS_MANIFEST)
-    marking = next(
-        ref.marking
-        for instance in spec.instances
-        for ref in instance.entities
-        if ref.marking == "RED-1"
-    )
-
-    assert _roundtrip_marking(_publisher(marking=marking)) == "RED-1"
-
-
-def test_publisher_falls_back_to_ac_marking_when_manifest_marking_empty():
-    assert _roundtrip_marking(_publisher(marking="")) == "AC-1"
-
+    metadata = json.loads(truth_path.with_suffix(".meta.json").read_text(encoding="utf-8"))
+    assert metadata["sample_count"] == recorder.samples
+    assert {entity["entity"] for entity in metadata["entities"]} == set(expected)
 
 
 def test_drain_burst_returns_every_queued_datagram():

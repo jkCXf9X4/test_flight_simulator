@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Run the two-instance airplane scenario through the end-to-end RPR path.
 
-Launches the P2 federation manifest, converts each instance's telemetry JSON to
-RPR on UDP 5505, records the decoded stream, and writes the truth JSONL,
-metadata sidecar, measurement CSV and ``.rrd`` under one run directory. See
-``scripts/rpr_e2e.py`` for the component wiring and the artifact layout.
+Launches the P2 federation manifest, lets each instance's ``rpr_entity`` FMU
+broadcast ``rpr.v2.PhysicalEntity`` frames to the recorder on UDP 5505, records
+the decoded stream, and writes the truth JSONL, metadata sidecar, measurement
+CSV and ``.rrd`` under one run directory. See ``scripts/rpr_e2e.py`` for the
+component wiring and the artifact layout.
 """
 
 from __future__ import annotations

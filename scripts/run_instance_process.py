@@ -2,10 +2,10 @@
 """Prepare one instance bundle, then replace this process with its simulation.
 
 This is the manifest ``command`` entry point. It keeps
-``prepare_instance_bundle.py`` as the artifact preparer (SSP copy, ports, offset,
-ssp4sim config), then ``exec``s the simulator so the process supervised by
-``pysos_coordinate.Federation`` is the simulation itself — one process per
-instance, no intermediate supervisor.
+``prepare_instance_bundle.py`` as the artifact preparer (SSP copy, RPR bind
+port, offset, ssp4sim config), then ``exec``s the simulator so the process
+supervised by ``pysos_coordinate.Federation`` is the simulation itself — one
+process per instance, no intermediate supervisor.
 """
 
 from __future__ import annotations
@@ -47,15 +47,15 @@ def _env_scenario() -> str | None:
     return value.strip() if value and value.strip() else None
 
 
-def _instance_from_telemetry_port(port: int) -> int:
-    """Recover the 1-based index from the manifest's telemetry port plan."""
+def _instance_from_bind_port(port: int) -> int:
+    """Recover the 1-based index from the manifest's per-instance bind port plan."""
 
     offset = port - int(instance_defaults(1)["telemetry_port"])
     if offset < 0 or offset % 2:
-        raise SystemExit(f"PYSOS_TELEMETRY_PORT={port} is outside the instance port plan")
+        raise SystemExit(f"PYSOS_TELEMETRY_PORT={port} is outside the instance bind port plan")
     index = offset // 2 + 1
     if int(instance_defaults(index)["telemetry_port"]) != port:
-        raise SystemExit(f"PYSOS_TELEMETRY_PORT={port} is outside the instance port plan")
+        raise SystemExit(f"PYSOS_TELEMETRY_PORT={port} is outside the instance bind port plan")
     return index
 
 
@@ -64,8 +64,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--instance", type=int, default=None, help="1-based instance index (or derive it from PYSOS_TELEMETRY_PORT).")
     parser.add_argument("--source-ssp", type=Path, default=DEFAULT_SOURCE_SSP, help="Prepared source SSP archive.")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="Directory for instance bundles.")
-    parser.add_argument("--telemetry-port", type=int, default=None, help="Telemetry UDP port (overrides PYSOS_TELEMETRY_PORT).")
-    parser.add_argument("--control-port", type=int, default=None, help="Control UDP port (overrides PYSOS_CONTROL_PORT).")
+    parser.add_argument("--telemetry-port", type=int, default=None, help="Per-instance RPR bind UDP port (overrides PYSOS_TELEMETRY_PORT).")
     parser.add_argument("--offset-north-km", type=float, default=None, help="Shift initX_km by this many kilometres.")
     parser.add_argument("--offset-east-km", type=float, default=None, help="Shift initY_km by this many kilometres.")
     parser.add_argument("--stop-time", type=float, default=None, help="Stop time in seconds.")
@@ -77,14 +76,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="local",
         help="Keep scenario waypoints in their own local frame, or translate them into the federation frame.",
     )
-    parser.add_argument(
-        "--bridge-input",
-        action="store_true",
-        help="Let UDP pilot commands steer the aircraft (ControlParameters.useBridgeInput).",
-    )
     parser.add_argument("--reference-latitude-deg", type=float, default=None, help="Wire origin latitude.")
     parser.add_argument("--reference-longitude-deg", type=float, default=None, help="Wire origin longitude.")
     parser.add_argument("--reference-altitude-m", type=float, default=None, help="Wire origin altitude.")
+    parser.add_argument("--entity-site", default=None, help="Entity site in the RPR payload.")
+    parser.add_argument("--entity-application", default=None, help="Entity application in the RPR payload.")
+    parser.add_argument("--entity", default=None, help="Entity number in the RPR payload.")
+    parser.add_argument("--marking", default=None, help="Entity marking in the RPR payload.")
     return parser.parse_args(argv)
 
 
@@ -95,23 +93,25 @@ def main(argv: list[str] | None = None) -> int:
     if index is None:
         if telemetry_env is None:
             raise SystemExit("--instance is required when PYSOS_TELEMETRY_PORT is unset")
-        index = _instance_from_telemetry_port(telemetry_env)
+        index = _instance_from_bind_port(telemetry_env)
     summary = prepare_instance(
         index,
         args.source_ssp,
         args.out_dir,
         telemetry_port=args.telemetry_port if args.telemetry_port is not None else telemetry_env,
-        control_port=args.control_port if args.control_port is not None else _env_int("PYSOS_CONTROL_PORT"),
         offset_north_km=args.offset_north_km,
         offset_east_km=args.offset_east_km,
         stop_time=args.stop_time,
         scenario=args.scenario or _env_scenario() or DEFAULT_SCENARIO,
         realtime=args.realtime,
         waypoint_frame=args.waypoint_frame,
-        bridge_input=args.bridge_input,
         reference_latitude_deg=args.reference_latitude_deg,
         reference_longitude_deg=args.reference_longitude_deg,
         reference_altitude_m=args.reference_altitude_m,
+        entity_site=args.entity_site if args.entity_site is not None else "1",
+        entity_application=args.entity_application if args.entity_application is not None else "1",
+        entity=args.entity,
+        marking=args.marking if args.marking is not None else "",
     )
     print(json.dumps(summary, sort_keys=True), flush=True)
 

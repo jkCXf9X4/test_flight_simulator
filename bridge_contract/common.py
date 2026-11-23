@@ -1,9 +1,9 @@
-"""Pure-Python helpers shared by the UDP bridge and tests."""
+"""Pure-Python helpers shared by the telemetry tooling and tests."""
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 
 def repo_root() -> Path:
@@ -28,7 +28,7 @@ def resolve_scenario_path(path: Path) -> Path:
     raise FileNotFoundError(f"Scenario file not found: {path}")
 
 
-def load_local_waypoints(scenario_path: Path) -> List[Dict[str, float]]:
+def load_local_waypoints(scenario_path: Path) -> list[dict[str, float]]:
     import sys
 
     airplane_root = _airplane_root()
@@ -42,7 +42,7 @@ def load_local_waypoints(scenario_path: Path) -> List[Dict[str, float]]:
     return project_waypoints_to_local_km(points)
 
 
-def parse_state_packet(payload: str) -> Dict[str, Any]:
+def parse_state_packet(payload: str) -> dict[str, Any]:
     decoder = json.JSONDecoder()
     idx = 0
     packet = None
@@ -90,19 +90,3 @@ def parse_state_packet(payload: str) -> Dict[str, Any]:
             "complete": bool(mission_status["complete"]),
         },
     }
-
-
-def encode_control_packet(command: Dict[str, Any]) -> bytes:
-    packet = {
-        "stick_pitch_norm": float(command.get("stick_pitch_norm", 0.0)),
-        "stick_roll_norm": float(command.get("stick_roll_norm", 0.0)),
-        "rudder_norm": float(command.get("rudder_norm", 0.0)),
-        "throttle_norm": float(command.get("throttle_norm", 0.6)),
-        "throttle_aux_norm": float(command.get("throttle_aux_norm", command.get("throttle_norm", 0.6))),
-        "button_mask": int(command.get("button_mask", 0)),
-        "hat_x": int(command.get("hat_x", 0)),
-        "hat_y": int(command.get("hat_y", 0)),
-        "mode_switch": int(command.get("mode_switch", 0)),
-        "reserved": int(command.get("reserved", 0)),
-    }
-    return (json.dumps(packet, separators=(",", ":")) + "\n").encode("utf-8")

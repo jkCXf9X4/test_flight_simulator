@@ -19,7 +19,6 @@ Top-level wrappers:
 - `./scripts/run_rerun_stack.sh`
 - `./scripts/build_rerun_container.sh`
 - `./scripts/container_rerun_smoke.sh`
-- `./scripts/send_pilot_command.py`
 - `./scripts/check_environment.sh` (`--live-container` checks Podman, the Rerun image, and X11; `--source-build` checks the airplane build dependencies)
 
 Recommended live workflow:
@@ -33,16 +32,15 @@ What the build now does inside `3rd_party/airplane`:
 
 - regenerates architecture-derived interfaces
 - exports the Modelica subsystem FMUs with OpenModelica
-- builds the native C++ bridge FMI 2.0 co-simulation FMU
-- verifies the bridge FMU with a UDP socket regression test
+- builds the RPR state-source and RPR entity FMI 2.0 co-simulation FMUs
 - regenerates the SSD and packages `build/ssp/aircraft.ssp`
 - copies the baseline SSP into the top-level `build/ssp`
 - copies the selected scenario into the top-level `build/ssp/scenario.json`
 - writes top-level `build/ssp/config.json` and `build/ssp/config.realtime.json`
 
-## Rerun viewer
+## RPR broadcast and viewer replay
 
-The supported live visualization is ROS-free. `ssp4sim` stays on the host, the native bridge FMU keeps emitting the existing newline-delimited JSON telemetry on UDP 5501, and `flight_viewer` renders it with Rerun.
+The supported live visualization is ROS-free and one-way. `ssp4sim` stays on the host, every aircraft broadcasts RPR entity-state packets to the recorder on UDP 5505, and `flight_viewer` replays the recorder's truth stream with Rerun. There is no live JSON telemetry/control socket and no pilot shim.
 
 ```bash
 # Host viewer, repo venv (default)
@@ -57,27 +55,24 @@ RERUN_CONTAINER=1 ./scripts/run_rerun_stack.sh
 RERUN_WEB=1 ./scripts/run_rerun_stack.sh
 ```
 
-- `run_rerun_stack.sh` starts `./scripts/run_airplane_scenario.py --realtime`, waits for `build/results/scenario_results_realtime.csv` to advance instead of sleeping, then runs `python -m flight_viewer --source json-udp --sink rerun --spawn` (`--connect-grpc` with `RERUN_WEB=1`) `--scenario 3rd_party/airplane/resources/scenarios/test_scenario.json --record build/results/flight_viewer.jsonl`.
+- `run_rerun_stack.sh` starts the realtime federation, waits for the recorder artifacts to advance instead of sleeping, then runs `python -m flight_viewer --source jsonl --path build/runs/<run>/truth.jsonl --sink rerun --spawn --realtime` (`--connect-grpc` with `RERUN_WEB=1`) with the run's scenario.
 - Host execution uses the repo venv. `RERUN_CONTAINER=1` runs the same command inside `Containerfile.rerun` with X11 mounts and `--network=host`, so UDP stays on loopback.
-- Manual pilot input goes through the pilot shim: `./scripts/send_pilot_command.py --pitch 0.2 --roll -0.1 --throttle 0.7 --duration 5` sends JSON control packets to UDP 5502.
 - Headless check, no X11 and no Podman: `./scripts/container_rerun_smoke.sh` writes `/tmp/smoke.rrd` and prints PASS/FAIL.
-- Every live run also writes `build/results/flight_viewer.jsonl`; replay it with `python -m flight_viewer --source jsonl --path build/results/flight_viewer.jsonl --sink rerun --spawn`.
-- A recorded federation run (`run_e2e_rpr.py --run-dir ...`) keeps `truth.jsonl`; replay it in the Rerun web viewer with `./scripts/replay_web.sh build/runs/<run>/truth.jsonl` (adds `RATE=2` for a faster pass). Loading the coordinator's `.rrd` opens paused and re-renders slowly under software rasterization, so this streams the truth log live instead; `./scripts/render_replay_rrd.py` writes a lighter `.rrd` when a file is preferred.
+- A recorded federation run (`run_e2e_rpr.py --run-dir ...`) writes `truth.jsonl`; replay it in the Rerun web viewer with `./scripts/replay_web.sh build/runs/<run>/truth.jsonl` (adds `RATE=2` for a faster pass). Loading the coordinator's `.rrd` opens paused and re-renders slowly under software rasterization, so this streams the truth log live instead; `./scripts/render_replay_rrd.py` writes a lighter `.rrd` when a file is preferred.
 
 ## Retired: RViz viewer
 
-The earlier RViz runtime has been retired and replaced by the Rerun viewer. Use `./scripts/run_rerun_stack.sh` for live visualization. The native `UdpBridge` FMU provides the unchanged UDP JSON telemetry/control contract.
+The earlier RViz runtime has been retired and replaced by the Rerun viewer. Use `./scripts/run_rerun_stack.sh` for visualization.
 
-## Current bridge implementation
+## RPR broadcast path
 
-The bridge is a native FMI 2.0 co-simulation FMU in C++ (`UdpBridge`) that acts as a UDP telemetry/control adapter, emitting newline-delimited JSON state packets. The bridge has no ROS dependency; it is a plain UDP telemetry/control adapter.
+The aircraft carries two native FMI 2.0 co-simulation FMUs: `rpr_state_source` projects the aircraft state onto the RPR entity-state vocabulary, and `rpr_entity` encodes and sends it. Deployment is initialization configuration:
 
-Current behavior:
+- `rpr_entity.transport` is `udp`;
+- `rpr_entity.bind_address` is the instance endpoint (5510, 5512, 5514, 5516);
+- `rpr_entity.peer_address` is the recorder at `127.0.0.1:5505`.
 
-- outbound telemetry is emitted as a UDP JSON packet from the FMU once per communication step
-- inbound control packets are read non-blocking by the FMU once per communication step
-- control packets are JSON objects carrying the `PilotCommand` fields
-- when no fresh control packets arrive, the bridge marks itself inactive so `ControlInterface` falls back to the scripted/manual default path
+Each instance publishes one-way at 10 Hz and never opens another instance's port. The recorder (`RprTruthRecorder` in `scripts/run_e2e_rpr.py`) binds 5505, decodes the RPR payloads, and writes `truth.jsonl`, `truth.meta.json`, `measurements.csv` and `recording.rrd`. There is no inbound control channel.
 
 Containerized viewer behavior:
 
@@ -85,17 +80,16 @@ Containerized viewer behavior:
 - `./scripts/check_environment.sh --live-container` validates Podman, the built Rerun image (`test-flight-simulator-rerun`), and the X11 requirements before launch
 - `./scripts/build_airplane.py [scenario-json]` refreshes the local SSP bundle used by both batch and live runs
 - `./scripts/build_rerun_container.sh` builds the reusable Podman Rerun image from `Containerfile.rerun`
-- `./scripts/run_rerun_stack.sh` runs the realtime simulation on the host and starts the viewer either on the host (default), with `RERUN_CONTAINER=1` in the container with X11 mounts and host networking, or with `RERUN_WEB=1` as the web viewer (`RERUN_WEB_PORT`, default 9090) in a dedicated Chrome instance that enables SwiftShader WebGL2 (`CHROME_BIN` overrides the browser)
+- `./scripts/run_rerun_stack.sh` runs the realtime federation on the host and replays the recorder truth stream either on the host (default), with `RERUN_CONTAINER=1` in the container with X11 mounts and host networking, or with `RERUN_WEB=1` as the web viewer (`RERUN_WEB_PORT`, default 9090) in a dedicated Chrome instance that enables SwiftShader WebGL2 (`CHROME_BIN` overrides the browser)
 - `./scripts/container_rerun_smoke.sh` runs the headless Rerun recording check without X11 or Podman
 - `./scripts/run_airplane_scenario.py` only runs `pyssp4sim` against the prepared local config and does not repackage scenario artifacts
 - use `./scripts/run_airplane_scenario.py --realtime` when you want the local realtime config without a viewer
 
 Implementation/build notes:
 
-- the FMU is built from `3rd_party/airplane/models/udp_bridge/native/`
-- the generated FMU is written to `3rd_party/airplane/build/fmus/UdpBridge.fmu`
-- the shared library exports the standard FMI 2 `fmi2*` entry points so `pyssp4sim` can import it directly
-- `3rd_party/airplane/tests/test_udp_bridge_fmu.py` now verifies the JSON bridge packet and control pass-through path
+- the RPR entity definition is dialect data from `pyfmi_rpr`; `sos/federation_system.sysml` supplies it as an included root so `scripts/sos_model.py` can resolve `RprEntity` without restating it
+- `scripts/prepare_instance_bundle.py` writes the per-instance RPR bind/peer addresses and entity identity into the SSP's SSV/SSM
+- the generated FMUs are packaged into `build/ssp/aircraft.ssp` alongside the Modelica subsystem FMUs
 
 ## Timing approach
 
@@ -106,7 +100,7 @@ For now, do not add new synchronization methods to the `pyssp4sim` API and do no
 Planned follow-up work, but explicitly not part of the initial implementation:
 
 1. Add a `doStep(t)` style method to the Python API so the caller can drive step timing explicitly.
-2. Add support for synchronizing against an external package or external clock source when the bridge/runtime requirements justify it.
+2. Add support for synchronizing against an external package or external clock source when the transport/runtime requirements justify it.
 
 ## Where design ownership lives
 
@@ -115,12 +109,12 @@ Planned follow-up work, but explicitly not part of the initial implementation:
 
 ## Current aircraft adaptation status
 
-The aircraft package now includes the native bridge in the packaged SSP workflow:
+The aircraft package now broadcasts RPR in the packaged SSP workflow:
 
-- the dedicated `UdpBridge` component is part of the aircraft architecture and SSD
-- the bridge is packaged as a native C++ FMU alongside the Modelica-exported subsystem FMUs
-- bridge-produced pilot commands enter through `ControlInterface`
-- top-level scripts build the SSP and can run a scenario while the bridge emits live UDP telemetry
+- `rpr_state_source` and `rpr_entity` are part of the aircraft architecture and SSD
+- both are packaged as native FMI 2.0 co-simulation FMUs alongside the Modelica-exported subsystem FMUs
+- per-instance bind/peer addresses and entity identity are written into the SSP parameters
+- top-level scripts build the SSP and run a scenario while the aircraft broadcasts RPR entity state
 
 ## Expected next implementation steps
 
@@ -150,19 +144,20 @@ The system-of-systems model has two planes: the entity plane
 (`sos/aircraft_federation.sysml`, lowered to the manifest) and the system plane
 (`sos/federation_system.sysml`, lowered by `scripts/sos_model.py`). The system
 plane owns the shared frame and origin, the timing contract, the host-side
-participants (orchestrator/recorder on RPR 5505, viewer, pilot), the flows and
-the run artifacts. `scripts/sos_model.py` must print `ok:` before a federation
+participants (orchestrator/recorder on RPR 5505, viewer replaying the truth
+stream, builder), the RPR broadcast flow and the run artifacts. `scripts/sos_model.py` must print `ok:` before a federation
 run, and `scripts/sos_model.py --artifacts` after a build to prove the fresh
 SSPs still match the modelled aircraft; see `docs/sos_model.md`.
 
 Per-instance run parameters live in the manifest `command` argv because the
 `pysos_sysml` subset cannot type them: `--realtime`, `--stop-time`, the
-placement offsets, `--waypoint-frame federation`, and the federation
-`--reference-latitude-deg/--reference-longitude-deg/--reference-altitude-m`.
+placement offsets, `--waypoint-frame federation`, the federation
+`--reference-latitude-deg/--reference-longitude-deg/--reference-altitude-m`,
+and the entity identity `--entity-site/--entity-application/--entity/--marking`.
 The frame flag rebases each scenario's waypoints into the federation frame, so
 four scenarios authored around four different geodetic origins still publish one
-consistent frame; the reference flags put that same origin in every telemetry
-packet. The aircraft composition itself is imported from
+consistent frame; the reference flags put that same origin in every RPR state
+packet and the identity flags name the entity on the wire. The aircraft composition itself is imported from
 `3rd_party/airplane/architecture/aircraft.sysml`, not restated.
 
 `scripts/run_instances.py` translates its CLI into a manifest and hands the
@@ -189,18 +184,20 @@ the project interpreter substituted for the portable `python3` in `command`.
 
 | purpose | ports | notes |
 | --- | --- | --- |
-| instance telemetry | `5510 + 2*(index-1)` | 5510, 5512, 5514, 5516 for four instances |
-| instance control | telemetry + 1 | 5511, 5513, 5515, 5517 |
+| instance RPR bind | `5510 + 2*(index-1)` | 5510, 5512, 5514, 5516 for four instances |
 | RPR fan-in | **5505** | dedicated recorder port, never an instance port |
 
 The old `5501` plan is retired; it collided with RPR `5505` at instance 3.
+`PYSOS_CONTROL_PORT` and the per-instance control port remain only in the
+SysML-lowered manifest, because the current `pysos_sysml` loader requires
+`controlPort`; no aircraft consumes them.
 
-| instance | telemetry | control | init offset (north, east) |
-| --- | --- | --- | --- |
-| 1 | 5510 | 5511 | 0, 0 km |
-| 2 | 5512 | 5513 | 0, +5 km |
-| 3 | 5514 | 5515 | 0, +10 km |
-| 4 | 5516 | 5517 | 0, +15 km |
+| instance | RPR bind | init offset (north, east) |
+| --- | --- | --- |
+| 1 | 5510 | 0, 0 km |
+| 2 | 5512 | 0, +5 km |
+| 3 | 5514 | 0, +10 km |
+| 4 | 5516 | 0, +15 km |
 
 The default manifest runs `test_scenario` for both instances. The SoS manifest
 runs `high_altitude_intercept`, `deep_strike_penetration`,
@@ -208,9 +205,9 @@ runs `high_altitude_intercept`, `deep_strike_penetration`,
 
 Each instance writes to `build/ssp/instances/instance-<N>/` when launched from
 the generated manifest (the e2e runner retargets this to its own run
-directory): its own SSP, `config.json`, `work/`, result CSV, and log. The local
-origin is scenario `points[0]`; the bridge's `reference_*` fields stay at their
-defaults and are not used for framing.
+directory): its own SSP, `config.json`, `work/`, result CSV, and log. The
+federation origin is scenario `points[0]`; it is written into
+`rpr_state_source.reference_*` so every broadcast names the frame it uses.
 
 ### Per-instance scenario flow
 
@@ -219,7 +216,8 @@ The scenario is selected per instance, never shared:
 1. The SysML federation author writes `scenario = "<stem>"` on an instance in
    `sos/aircraft_federation.sysml`.
 2. `pysos-sysml manifest` lowers that to the manifest `env.PYSOS_SCENARIO`
-   key (alongside `PYSOS_TELEMETRY_PORT` and `PYSOS_CONTROL_PORT`).
+   key (alongside `PYSOS_TELEMETRY_PORT`; `PYSOS_CONTROL_PORT` is the vestigial
+   key the current loader still emits).
 3. `scripts/run_instance_process.py` reads those variables (explicit CLI flags
    still win, and the scenario defaults to `test_scenario` when the key is
    absent). When `--instance` is omitted, it derives the 1-based index from
@@ -232,21 +230,18 @@ The scenario is selected per instance, never shared:
    `waypointCount`, `targetAirspeed_mps`, and `waypointProximity_km`. The
    existing `initX_km`/`initY_km` offsets and port rewrite stay unchanged.
 
-Aircraft are peerless: every instance only publishes its own telemetry on its
-own port, and the e2e runner starts one one-way RPR publisher per instance. No
-instance opens another instance's port or ingests another instance's telemetry;
-only the single recorder on UDP 5505 fans the streams in.
+Aircraft are peerless: every instance only broadcasts its own RPR state from
+its own bind port. No instance opens another instance's port or ingests another
+instance's state; only the single recorder on UDP 5505 fans the streams in.
 
 ## End-to-end RPR acceptance run
 
 `scripts/run_e2e_rpr.py` composes the whole stack for a fixed simulated
 duration. It launches every instance in the selected manifest through
-`pysos_coordinate.Federation`, converts each instance's telemetry JSON to the
-shared `EntityState`, and republishes it as RPR payloads on the dedicated RPR
-port **5505**, then subscribes that stream, decodes it with the scenario's
-explicit `RprOrigin` (`points[0]`), and writes the recorder artifacts. It uses
-`pysos_interop.rpr.encode_entity_state` / `decode_frame` and adds no library
-code to `pyssp_dev`.
+`pysos_coordinate.Federation` and binds the recorder to the dedicated RPR port
+**5505**. The aircraft broadcast RPR themselves; the recorder decodes the
+payloads with the scenario's explicit `RprOrigin` (`points[0]`) and writes the
+recorder artifacts. It adds no library code to `pyssp_dev`.
 
 ```bash
 PY=/home/eriro/pwa/2_work/flight_sim/venv/bin/python3
@@ -286,8 +281,8 @@ Run directory layout (`build/runs/e2e/`):
 | `instances/instance-<N>/` | per-instance SSP, `config.json`, `work/`, result CSV and log |
 | `logs/<instance>.{stdout,stderr}.log` | federation process logs |
 
-RPR has no timestamp field, so each publisher owns a per-entity ordinal at the
-bridge's 10 Hz cadence and the recorder stamps sample `n` at
+RPR has no timestamp field, so each entity's RPR stream carries a per-entity
+ordinal at the 10 Hz cadence and the recorder stamps sample `n` at
 `n * sample_period_s`. A per-sample barrier writes a row only when every
 expected slug has arrived; a watchdog flushes the oldest partial sample after
 2.0 s, so a missing publisher cannot hang the recorder. Entities absent from a
@@ -295,17 +290,17 @@ partial sample have no values and appear as `nan` in `measurements.csv` and
 `separation.csv`.
 
 Batch mode runs 20 s of 10 Hz telemetry as a burst several times faster than
-realtime, so the per-instance telemetry sockets and the shared RPR socket are
-finite kernel UDP buffers. `run.json` now carries a `transport` block with
-per-slug telemetry datagrams/packets received, RPR payloads sent, recorder
-datagrams decoded, and the kernel UDP counter delta (`RcvbufErrors`); a non-zero
+realtime, so the per-instance RPR bind sockets and the shared recorder socket
+are finite kernel UDP buffers. `run.json` now carries a `transport` block with
+per-slug RPR datagrams received, recorder datagrams decoded, and the kernel UDP
+counter delta (`RcvbufErrors`); a non-zero
 `RcvbufErrors` that matches a frame deficit means the kernel dropped datagrams,
 not that the recorder logic lost them. Publisher/recorder thread exceptions are
 recorded there too (`error`, `error_traceback`), so a dead thread leaves
 evidence even when the run is started from a script.
 
-The publisher drops the bridge's leading all-zero pre-initialisation record, so
-the recorded artifacts start at the first real packet with zero velocity on its
+The RPR path drops the leading all-zero pre-initialisation record, so the
+recorded artifacts start at the first real packet with zero velocity on its
 first sample and no startup separation frame. The two-instance default measures
 **5000.0 m** between entity 1 and entity 2 (origin `points[0]` =
 `(-2.957519, 39.232955)`, 5 km east offset). The four-aircraft SoS run keeps all

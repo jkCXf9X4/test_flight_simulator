@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from typing import ClassVar
 
 import instance_manifest
+import pytest
+import run_instance_process
 import run_instances
 
 
@@ -75,6 +77,14 @@ def test_launch_flags_are_translated_into_the_spec(monkeypatch):
     assert command[:2] == ["python3", "scripts/run_instance_process.py"]
     assert command[-3:] == ["--stop-time", "10.0", "--realtime"]
     assert spec.instances[0].telemetry[0].port == 5510
+
+
+@pytest.mark.parametrize("flag", ["--control-port", "--bridge-input"])
+def test_bridge_control_flags_are_gone(flag):
+    """The JSON bridge is gone, so the launcher no longer accepts its flags."""
+
+    with pytest.raises(SystemExit):
+        run_instance_process.parse_args([flag, "1"])
 
 
 def test_invalid_manifest_returns_one(tmp_path, capsys):

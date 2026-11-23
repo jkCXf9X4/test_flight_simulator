@@ -16,10 +16,10 @@ SCENARIO_DIR = REPO_ROOT / "3rd_party" / "airplane" / "resources" / "scenarios"
 RPR_PORT = 5505
 
 EXPECTED = {
-    "red_interceptor": (1, 5510, 5511, "high_altitude_intercept", "RED-1"),
-    "red_striker": (2, 5512, 5513, "deep_strike_penetration", "RED-2"),
-    "blue_cas": (3, 5514, 5515, "cas_multi_store_support", "BLUE-1"),
-    "blue_baseline": (4, 5516, 5517, "test_scenario", "BLUE-2"),
+    "red_interceptor": (1, 5510, "high_altitude_intercept", "RED-1"),
+    "red_striker": (2, 5512, "deep_strike_penetration", "RED-2"),
+    "blue_cas": (3, 5514, "cas_multi_store_support", "BLUE-1"),
+    "blue_baseline": (4, 5516, "test_scenario", "BLUE-2"),
 }
 
 
@@ -69,15 +69,23 @@ def test_four_distinct_entities_and_unique_endpoints():
     assert RPR_PORT not in ports
 
 
-def test_env_carries_scenario_and_ports():
+def test_env_carries_scenario_and_telemetry_port():
     data = _manifest_json()
     for instance in data["instances"]:
-        _entity, telemetry, control, scenario, _marking = EXPECTED[instance["name"]]
-        assert instance["env"] == {
-            "PYSOS_SCENARIO": scenario,
-            "PYSOS_TELEMETRY_PORT": str(telemetry),
-            "PYSOS_CONTROL_PORT": str(control),
-        }
+        _entity, telemetry, scenario, _marking = EXPECTED[instance["name"]]
+        assert instance["env"]["PYSOS_SCENARIO"] == scenario
+        assert instance["env"]["PYSOS_TELEMETRY_PORT"] == str(telemetry)
+
+
+def test_identity_args_carry_the_lowered_entity():
+    data = _manifest_json()
+    for instance in data["instances"]:
+        entity = instance["entities"][0]
+        command = instance["command"]
+        assert command[command.index("--entity-site") + 1] == entity["site"]
+        assert command[command.index("--entity-application") + 1] == entity["application"]
+        assert command[command.index("--entity") + 1] == entity["entity"]
+        assert command[command.index("--marking") + 1] == entity["marking"]
 
 
 def test_scenarios_are_distinct_and_exist():

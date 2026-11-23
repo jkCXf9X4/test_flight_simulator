@@ -18,7 +18,15 @@
         "--reference-longitude-deg",
         "39.232955",
         "--reference-altitude-m",
-        "0"
+        "0",
+        "--entity-site",
+        "1",
+        "--entity-application",
+        "1",
+        "--entity",
+        "1",
+        "--marking",
+        "RED-1"
       ],
       "control": [
         {
@@ -67,7 +75,15 @@
         "--reference-longitude-deg",
         "39.232955",
         "--reference-altitude-m",
-        "0"
+        "0",
+        "--entity-site",
+        "1",
+        "--entity-application",
+        "1",
+        "--entity",
+        "2",
+        "--marking",
+        "RED-2"
       ],
       "control": [
         {
@@ -116,7 +132,15 @@
         "--reference-longitude-deg",
         "39.232955",
         "--reference-altitude-m",
-        "0"
+        "0",
+        "--entity-site",
+        "1",
+        "--entity-application",
+        "1",
+        "--entity",
+        "3",
+        "--marking",
+        "BLUE-1"
       ],
       "control": [
         {
@@ -165,7 +189,15 @@
         "--reference-longitude-deg",
         "39.232955",
         "--reference-altitude-m",
-        "0"
+        "0",
+        "--entity-site",
+        "1",
+        "--entity-application",
+        "1",
+        "--entity",
+        "4",
+        "--marking",
+        "BLUE-2"
       ],
       "control": [
         {
