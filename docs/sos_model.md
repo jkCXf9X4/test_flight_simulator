@@ -41,6 +41,8 @@ A run is complete only when all of the following are decided somewhere, once:
 | fact | owner |
 | --- | --- |
 | process table: command, cwd, env, interpreter | entity plane (`sos/aircraft_federation.sysml` → manifest) |
+| launch contract: mode, readiness, timeout, order, dependency | entity plane `PysosSoS::LaunchSpec` → `startup_timeout` + `env.PYSOS_LAUNCH_MODE`/`PYSOS_READINESS`/`PYSOS_LAUNCH_ORDER`/`PYSOS_AFTER_PROCESS` |
+| aircraft composition an entity builds on | entity plane imports `Aircraft::*`; every `AircraftEntity` composes `AircraftModel` |
 | per-instance RPR bind endpoint (one-way broadcast to the recorder) | entity plane |
 | entity identity: site/application/entity and marking in the broadcast | entity plane (`command` argv) |
 | scenario/mission per entity | entity plane (`scenario` attribute → `PYSOS_SCENARIO`) |
@@ -95,7 +97,7 @@ system-of-systems layer, not for the aircraft model.
 | piece | what it actually owns | verdict at SoS level |
 | --- | --- | --- |
 | `experimental_pyssp_standard` (SSP/SSD/SSV/SSM) | describes and packs FMU composition: components, connectors, connections, parameter sets/mappings, `DefaultExperiment`; no executor | **rejected as the SoS model, adopted inside an instance.** Components are FMUs and connections are FMI connectors, so an entity's internals belong here (`build/ssp/scenario.ssp`), but a process federation is not an SSP. `pyssp_standard` has no process, timing policy, entity identity or frame. |
-| `pysos_sysml` | lowers one SysML package of `part` usages to the coordinator manifest | **adopted for the entity plane only.** Its subset is deliberately narrow: exactly eight attributes per instance, no ports, no connections, no timing (ports/connections are parsed by `pycps_sysml2` but rejected by this loader). Consequence: run parameters must ride in `command` argv, and that is what §1 lists. |
+| `pysos_sysml` | lowers one SysML package of `part` usages to the coordinator manifest | **adopted for the entity plane.** It now uses the `pycps_sysml2` base for imports/include roots, entity composition (`part aircraft : AircraftModel`) and the shared `PysosSoS::LaunchSpec`. It still rejects ports, connections and timing, so per-instance run parameters ride in `command` argv (§1). The entity plane and the system plane therefore compose the same imported `AircraftModel` instead of restating it. |
 | `pycps_sysml2` (the SysML v2 IR) | parses packages, part/port definitions, part usages, port usages, connections and typed attribute values (`Real`, `Integer`, `Boolean`, `String`) | **adopted as the system-plane lowering.** It already carries what `pysos_sysml` rejects, so the system plane is authored as SysML v2 and lowered here. Gap: part-usage multiplicity is dropped, so `part instances : AircraftInstance [4]` is recovered by a one-line lexical adjunct (the same workaround `pysos_sysml` uses). It also carries cross-package imports (`Architecture.imports`), which is how the aircraft architecture is pulled in. |
 | `pysos_coordinate` | process supervision: spawn, log, SIGTERM/SIGKILL by process group, exit codes | **adopted.** It owns no clock: `timing` accepts only `wall_clock` and is never read by the supervisor; `startup_timeout` is validated but unenforced; there is no readiness gate, heartbeat or restart. The timing contract below records this instead of pretending otherwise. |
 | `ssp4sim` + `pyssp4sim` | per-instance fixed-step FMI 2.0 CS execution, absolute-deadline wall-clock pacing | **adopted, one process per instance.** `realtime: true` is a blocking `sleep_until` from a `CLOCK_MONOTONIC` reference captured at executor construction; no drift estimate and no overrun policy (an overrun free-runs until it catches up). There is no external `doStep`, pause or command channel. |
@@ -116,18 +118,25 @@ flows they share.
 
 ```
 sos/aircraft_federation.sysml     entity plane, SysML v2, lowered by pysos_sysml
+  ├─ private import Aircraft::*   every AircraftEntity composes AircraftModel
+  │    └─ 3rd_party/airplane/architecture/aircraft.sysml   (not duplicated)
+  ├─ private import PysosSoS::*   shared LaunchSpec vocabulary (pysos_sysml)
   └─ manifests/aircraft_federation.manifest.json   schema 1 (pysos_coordinate)
 sos/federation_system.sysml       system plane, SysML v2, lowered by pycps_sysml2
-  ├─ private import Aircraft::*   aircraft composition, parameters, FMU sources
-  │    └─ 3rd_party/airplane/architecture/aircraft.sysml   (not duplicated)
+  ├─ private import Aircraft::*   the same composition, parameters, FMU sources
+  ├─ private import PysosSoS::*   the same launch vocabulary for host processes
   └─ scripts/sos_model.py         lowered model + manifest resolution + checks
+scripts/entity_manifest.py        lowers the entity plane with its include roots
 tests/test_sos_model.py           the completeness gate
 ```
 
-Two SysML files, one per plane, because `pysos_sysml` rejects the constructs the
-system plane needs (ports, connections, attributes beyond the eight instance
-ones) and no single lowering accepts both. Each file is the only authority for
-its plane; the system plane references the entity plane, never restates it.
+Two SysML files, one per plane, because `pysos_sysml` still rejects the
+constructs the system plane needs (ports, connections, timing) and no single
+lowering accepts both. The two planes now share the same imported
+`AircraftModel` and the same `LaunchSpec` vocabulary; `scripts/sos_model.py`
+proves the entity plane, the manifest and the system plane agree. Each file is
+the only authority for its plane; the system plane references the entity plane,
+never restates it.
 
 Entity-plane instance command (one line per entity in the SysML):
 
@@ -160,9 +169,14 @@ SystemDescription`):
   external RPR broadcast port; `part instances : AircraftInstance [4]` is one
   occurrence per manifest entry, and identity, endpoints, scenario and run
   flags stay in the entity plane;
-- `part def Orchestrator` / `Viewer` / `Builder` — the host-side processes with
-  `roles`, `launch`, `cwd`, `command` and typed ports. The orchestrator binds
-  RPR 5505; the viewer reads the recorder truth file and owns no socket;
+- `part def Orchestrator` / `Viewer` / `Builder :> Application` — the host-side
+  processes specialize the shared `PysosSoS::Application` (roles, command, cwd)
+  and declare their own nested `part launch : LaunchSpec` (`mode`, `readiness`,
+  `timeout_s`, `order`, `after_process`). `sos_model.py` resolves inherited
+  members through `effective_members` and validates the launch graph: builder
+  order 0, orchestrator after the builder, viewer after the recorder, no cycles.
+  The orchestrator binds RPR 5505; the viewer reads the recorder truth file and
+  owns no socket;
 - `connection <name> connect a.p to b.q` — the RPR broadcast flow; a connection
   to the multiplicity part lowers to the `instance/*` wildcard, and its
   protocol, encoding and rate come from the source port type;
@@ -239,7 +253,11 @@ Consequences that the model makes explicit:
    `artifacts.run_dir/truth.jsonl`) with no `--telemetry` socket;
 10. the artifact set contains `truth`, `measurements` and `run`, with unique
     paths and a repository-relative run directory;
-11. the built `scenario.ssp` matches the imported aircraft: the same eleven
+11. the entity plane loads with its `Aircraft`/`PysosSoS` include roots, every
+    entity composes the same `AircraftModel` the system plane imported, and its
+    identity, scenario and `LaunchSpec` agree with the manifest
+    (`mode`/`readiness`/`startup_timeout`);
+12. the built `scenario.ssp` matches the imported aircraft: the same eleven
     components with the same FMU files, every modelled port present as an SSD
     connector, every modelled parameter present as an SSD parameter connector
     (arrays as `name[i]`), every modelled wire present as SSD connections, FMI
@@ -248,18 +266,27 @@ Consequences that the model makes explicit:
 
 ## 7. Known gaps (next iterations, in order of value)
 
-1. **Readiness and epoch.** `pysos_coordinate` spawns sequentially with no
-   readiness gate, and `startup_timeout` is unenforced. A handshake (port bound
-   or log line) plus a shared start instant would turn "started" into
-   "started together". Until then, `epoch: per_process_monotonic` is the truth.
+1. **Readiness and epoch.** The model now declares a `PysosSoS::LaunchSpec`
+   (`mode`, `readiness`, `timeout_s`, `order`, `after_process`) for every entity
+   and host process, and the entity plane lowers it to `startup_timeout` plus
+   `env.PYSOS_LAUNCH_MODE`/`PYSOS_READINESS`/`PYSOS_LAUNCH_ORDER`/
+   `PYSOS_AFTER_PROCESS`. `sos_model.py` validates the host launch graph.
+   `pysos_coordinate` still spawns
+   sequentially with no readiness gate and does not enforce `startup_timeout`.
+   A handshake (port bound or log line) plus a shared start instant would turn
+   "started" into "started together". Until then, `epoch:
+   per_process_monotonic` is the truth and the launch contract is declared, not
+   enforced.
 2. **External stepping.** `doStep(t)`/pause/resume is explicitly not implemented
    in ssp4sim (`IMP-037`) and the workflow doc forbids adding a second sync
    layer for now. That is the prerequisite for any barrier-based federation.
-3. **One SysML file.** The federation is two SysML files because `pysos_sysml`
-   rejects ports/connections/timing while `pycps_sysml2` accepts them. Teaching
-   `pysos_sysml` to lower ports, connections and extra attributes would collapse
-   both planes into one package and let per-instance run parameters leave the
-   `command` string. Until then the split and the argv encoding are deliberate.
+3. **One SysML file.** The federation is still two SysML files. `pysos_sysml`
+   now accepts imports/include roots, entity composition and `LaunchSpec`, so
+   both planes compose the same aircraft and share the launch vocabulary.
+   Collapsing the planes also needs ports, connections and timing in the entity
+   lowerer, and a way to put per-instance run parameters in typed attributes
+   instead of `command` argv. Until then the split and the argv encoding are
+   deliberate.
 4. **Viewer launch.** The viewer is not started by the coordinator; it is a
    manual replay of the recorder truth file, so the file path is duplicated and
    only guarded by the check. Launching it as another supervised instance would

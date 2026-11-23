@@ -44,7 +44,11 @@
         }
       ],
       "env": {
+        "PYSOS_AFTER_PROCESS": "supervisor",
         "PYSOS_CONTROL_PORT": "5511",
+        "PYSOS_LAUNCH_MODE": "supervised",
+        "PYSOS_LAUNCH_ORDER": "2",
+        "PYSOS_READINESS": "port_bound",
         "PYSOS_SCENARIO": "high_altitude_intercept",
         "PYSOS_TELEMETRY_PORT": "5510"
       },
@@ -101,7 +105,11 @@
         }
       ],
       "env": {
+        "PYSOS_AFTER_PROCESS": "supervisor",
         "PYSOS_CONTROL_PORT": "5513",
+        "PYSOS_LAUNCH_MODE": "supervised",
+        "PYSOS_LAUNCH_ORDER": "2",
+        "PYSOS_READINESS": "port_bound",
         "PYSOS_SCENARIO": "deep_strike_penetration",
         "PYSOS_TELEMETRY_PORT": "5512"
       },
@@ -158,7 +166,11 @@
         }
       ],
       "env": {
+        "PYSOS_AFTER_PROCESS": "supervisor",
         "PYSOS_CONTROL_PORT": "5515",
+        "PYSOS_LAUNCH_MODE": "supervised",
+        "PYSOS_LAUNCH_ORDER": "2",
+        "PYSOS_READINESS": "port_bound",
         "PYSOS_SCENARIO": "cas_multi_store_support",
         "PYSOS_TELEMETRY_PORT": "5514"
       },
@@ -215,7 +227,11 @@
         }
       ],
       "env": {
+        "PYSOS_AFTER_PROCESS": "supervisor",
         "PYSOS_CONTROL_PORT": "5517",
+        "PYSOS_LAUNCH_MODE": "supervised",
+        "PYSOS_LAUNCH_ORDER": "2",
+        "PYSOS_READINESS": "port_bound",
         "PYSOS_SCENARIO": "test_scenario",
         "PYSOS_TELEMETRY_PORT": "5516"
       },

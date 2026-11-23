@@ -2,7 +2,12 @@
 
 Four aircraft authored in `aircraft_federation.sysml` (package
 `AircraftFederation`) and lowered to `manifests/aircraft_federation.manifest.json`.
-Each part is a scalar usage of the empty part def `AircraftEntity`.
+Each part is a scalar usage of `AircraftEntity`, which imports the real
+architecture (`private import Aircraft::*;`) and composes
+`part aircraft : AircraftModel;` — the aircraft is not restated. Every instance
+also declares a shared `part launch : LaunchSpec` (`supervised`, `port_bound`,
+30 s, order 2, after the `supervisor` role) from the `PysosSoS` vocabulary
+shipped by `pysos_sysml`.
 
 | Usage | Callsign | Scenario | RPR bind port |
 | --- | --- | --- | --- |
@@ -42,7 +47,7 @@ it (`part instances : AircraftInstance [4]`, typed by the imported
 
 ```bash
 PY=/home/eriro/pwa/2_work/flight_sim/venv/bin/python3
-$PY -m pysos_sysml manifest sos/aircraft_federation.sysml -o manifests/aircraft_federation.manifest.json --check
+$PY scripts/entity_manifest.py --check  # lower the entity plane with its include roots
 $PY scripts/sos_model.py              # entity plane + system plane + frame + timing + flow
 $PY scripts/sos_model.py --artifacts  # also require the built SSPs to match
 ./scripts/build_airplane.py           # build the full aircraft (after --source-build checks)

@@ -24,8 +24,10 @@ EXPECTED = {
 
 
 def _manifest_cli(*args: str) -> subprocess.CompletedProcess[str]:
+    # The entity plane imports Aircraft + PysosSoS, so lowering goes through
+    # the wrapper that resolves those include roots.
     return subprocess.run(
-        [sys.executable, "-m", "pysos_sysml", "manifest", *args],
+        [sys.executable, str(REPO_ROOT / "scripts" / "entity_manifest.py"), *args],
         capture_output=True,
         text=True,
         check=False,
@@ -37,17 +39,26 @@ def _manifest_json() -> dict:
 
 
 def test_checked_in_manifest_matches_fresh_lowering():
-    fresh = _manifest_cli(str(SYSML))
+    fresh = _manifest_cli()
     assert fresh.returncode == 0, fresh.stderr
     assert MANIFEST.read_text(encoding="utf-8") == fresh.stdout
-    check = _manifest_cli(str(SYSML), "-o", str(MANIFEST), "--check")
+    check = _manifest_cli("-o", str(MANIFEST), "--check")
     assert check.returncode == 0, check.stderr
 
 
 def test_generator_reports_stale_manifest(tmp_path):
     stale = tmp_path / "stale.manifest.json"
     stale.write_text("{}\n", encoding="utf-8")
-    assert _manifest_cli(str(SYSML), "-o", str(stale), "--check").returncode == 1
+    assert _manifest_cli("-o", str(stale), "--check").returncode == 1
+
+
+def test_every_entity_launch_spec_is_lowered():
+    for instance in _manifest_json()["instances"]:
+        assert instance["startup_timeout"] == 30.0
+        assert instance["env"]["PYSOS_LAUNCH_MODE"] == "supervised"
+        assert instance["env"]["PYSOS_READINESS"] == "port_bound"
+        assert instance["env"]["PYSOS_LAUNCH_ORDER"] == "2"
+        assert instance["env"]["PYSOS_AFTER_PROCESS"] == "supervisor"
 
 
 def test_manifest_is_accepted_by_coordinate_and_constructs():

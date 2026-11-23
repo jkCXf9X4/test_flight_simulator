@@ -128,8 +128,10 @@ the schema owned by `pysos_coordinate`:
 - `manifests/two_instances.manifest.json` — the generated two-instance default,
   produced by `scripts/generate_instance_manifest.py`.
 - `manifests/aircraft_federation.manifest.json` — the four-aircraft SoS
-  manifest, lowered from `sos/aircraft_federation.sysml` by `pysos-sysml`
-  (RED-1/RED-2/BLUE-1/BLUE-2, four distinct scenarios).
+  manifest, lowered from `sos/aircraft_federation.sysml` by
+  `scripts/entity_manifest.py` (RED-1/RED-2/BLUE-1/BLUE-2, four distinct
+  scenarios). The entity plane imports the real `Aircraft` model and the shared
+  `PysosSoS::LaunchSpec`; the wrapper resolves those include roots.
 
 They are generated, not hand-edited:
 
@@ -137,7 +139,7 @@ They are generated, not hand-edited:
 PY=/home/eriro/pwa/2_work/flight_sim/venv/bin/python3
 $PY scripts/generate_instance_manifest.py           # rewrite the two-instance manifest
 $PY scripts/generate_instance_manifest.py --check   # fail if it is stale
-$PY -m pysos_sysml manifest sos/aircraft_federation.sysml -o manifests/aircraft_federation.manifest.json --check  # fail if it is stale
+$PY scripts/entity_manifest.py --check  # fail if the entity manifest is stale
 ```
 
 The system-of-systems model has two planes: the entity plane
@@ -215,9 +217,11 @@ The scenario is selected per instance, never shared:
 
 1. The SysML federation author writes `scenario = "<stem>"` on an instance in
    `sos/aircraft_federation.sysml`.
-2. `pysos-sysml manifest` lowers that to the manifest `env.PYSOS_SCENARIO`
-   key (alongside `PYSOS_TELEMETRY_PORT`; `PYSOS_CONTROL_PORT` is the vestigial
-   key the current loader still emits).
+2. `scripts/entity_manifest.py` lowers that to the manifest
+   `env.PYSOS_SCENARIO` key (alongside `PYSOS_TELEMETRY_PORT`, the vestigial
+   `PYSOS_CONTROL_PORT`, and the `PYSOS_LAUNCH_MODE`/`PYSOS_READINESS`/
+   `PYSOS_LAUNCH_ORDER`/`PYSOS_AFTER_PROCESS` keys from the shared
+   `PysosSoS::LaunchSpec`).
 3. `scripts/run_instance_process.py` reads those variables (explicit CLI flags
    still win, and the scenario defaults to `test_scenario` when the key is
    absent). When `--instance` is omitted, it derives the 1-based index from

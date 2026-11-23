@@ -6,8 +6,10 @@ accepts the whole federation today:
 
 * the **entity plane** is ``sos/aircraft_federation.sysml``, lowered by
   ``pysos_sysml`` to the ``pysos_coordinate`` manifest (schema 1): process
-  ``command``/``cwd``/``env``, per-instance UDP endpoints, entity identity and
-  the scenario name;
+  ``command``/``cwd``/``env``, per-instance UDP endpoints, entity identity,
+  the scenario name and the shared ``PysosSoS::LaunchSpec`` contract. It
+  imports the real ``Aircraft`` architecture, so every ``AircraftEntity``
+  composes ``AircraftModel`` instead of restating it;
 * the **system plane** is ``sos/federation_system.sysml``: the shared frame, the
   federation timing contract, the host-side participants
   (orchestrator/recorder, viewer, builder), the RPR broadcast flow and the run
@@ -25,12 +27,15 @@ contradictory, so "the model is complete" is a checkable claim.
 
 ``pysos_sysml`` lowers only a fixed attribute set, so per-instance run
 parameters ride in the manifest ``command`` argv; the checks below keep them
-present and consistent.
+present and consistent. The entity plane's typed facts (aircraft composition,
+launch contract, identity) are checked against the manifest and the system
+plane here, not duplicated in the manifest.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import io
 import json
 import re
@@ -43,7 +48,9 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
+import entity_manifest
 import pycps_sysml2
+import pysos_sysml
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
@@ -61,7 +68,15 @@ WAYPOINT_FRAMES = frozenset({"federation", "local"})
 PROTOCOLS = frozenset({"udp"})
 ENCODINGS = frozenset({"json-udp", "dis", "rpr", "none"})
 ROLES = frozenset({"supervisor", "recorder", "visualizer", "operator", "builder"})
-LAUNCHES = frozenset({"operator", "manual"})
+LAUNCH_MODES = frozenset({"supervised", "operator", "manual"})
+LAUNCH_READINESS = frozenset({"none", "port_bound", "log_line"})
+LAUNCH_ATTRIBUTES = {
+    "mode": "String",
+    "readiness": "String",
+    "timeout_s": "Real",
+    "order": "Integer",
+    "after_process": "String",
+}
 REQUIRED_ARTIFACTS = ("truth", "measurements", "run")
 
 #: SSP/FMI namespaces and members the artifact check reads by name.
@@ -130,10 +145,19 @@ class Timing:
 
 
 @dataclass(frozen=True)
+class LaunchSpec:
+    mode: str
+    readiness: str
+    timeout_s: float
+    order: int
+    after_process: str
+
+
+@dataclass(frozen=True)
 class Process:
     name: str
     roles: tuple[str, ...]
-    launch: str
+    launch: LaunchSpec
     command: tuple[str, ...]
     cwd: str
     ports: dict[str, int | None]
@@ -161,6 +185,7 @@ class Wire:
 @dataclass(frozen=True)
 class Aircraft:
     system: str
+    key: str
     components: tuple[Component, ...]
     wires: tuple[Wire, ...]
 
@@ -376,23 +401,125 @@ def _port_contract(architecture: Any, type_name: str, where: str) -> tuple[str, 
     return protocol, encoding, rate_hz
 
 
+def _string_literal(value: Any, where: str) -> str:
+    if isinstance(value, str):
+        try:
+            parsed = ast.literal_eval(value)
+        except (SyntaxError, ValueError):
+            parsed = None
+        if isinstance(parsed, str):
+            return parsed
+    raise ModelError(f"{where}: expected a quoted String literal, found {value!r}")
+
+
+def _int_literal(value: Any, where: str) -> int:
+    if isinstance(value, bool):
+        raise ModelError(f"{where}: expected an Integer literal, found {value!r}")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and re.fullmatch(r"[+-]?\d+", value.strip()):
+        return int(value.strip())
+    raise ModelError(f"{where}: expected an Integer literal, found {value!r}")
+
+
+def _real_literal(value: Any, where: str) -> float:
+    if isinstance(value, bool):
+        raise ModelError(f"{where}: expected a Real literal, found {value!r}")
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            pass
+    raise ModelError(f"{where}: expected a Real literal, found {value!r}")
+
+
+def _launch_spec(architecture: Any, definition: Any, where: str) -> LaunchSpec:
+    """Lower the nested ``part launch : LaunchSpec`` contract.
+
+    Nested usage-body values reach the IR as authored text, so they are
+    normalised here. ``effective_members`` resolves a launch inherited from
+    ``PysosSoS::Application`` when the concrete process does not redeclare it.
+    """
+    members = pycps_sysml2.effective_members(architecture, definition)
+    usage = members.parts.get("launch")
+    if usage is None:
+        raise ModelError(f"{where}: missing nested 'part launch : LaunchSpec'")
+    launch_def = _part_definition(architecture, usage.type_name)
+    if launch_def.name != "LaunchSpec":
+        raise ModelError(
+            f"{where}.launch: must be typed PysosSoS::LaunchSpec, got {launch_def.name!r}"
+        )
+    declared = {name: attribute.type_name for name, attribute in launch_def.attributes.items()}
+    if declared != LAUNCH_ATTRIBUTES:
+        raise ModelError(
+            f"part def {launch_def.name}: expected attributes {sorted(LAUNCH_ATTRIBUTES)}, "
+            f"found {sorted(declared)}"
+        )
+    body = usage.body
+    if body is None:
+        raise ModelError(f"{where}.launch: the launch spec has no attribute body")
+    values = {
+        name: (attribute.type_name, attribute.value)
+        for name, attribute in body.attributes.items()
+    }
+    if set(values) != set(LAUNCH_ATTRIBUTES):
+        raise ModelError(
+            f"{where}.launch: expected attributes {sorted(LAUNCH_ATTRIBUTES)}, "
+            f"found {sorted(values)}"
+        )
+    for name, expected in LAUNCH_ATTRIBUTES.items():
+        actual, _value = values[name]
+        if actual != expected:
+            raise ModelError(
+                f"{where}.launch.{name}: expected type {expected}, found {actual!r}"
+            )
+    mode = _string_literal(values["mode"][1], f"{where}.launch.mode")
+    readiness = _string_literal(values["readiness"][1], f"{where}.launch.readiness")
+    timeout = _real_literal(values["timeout_s"][1], f"{where}.launch.timeout_s")
+    order = _int_literal(values["order"][1], f"{where}.launch.order")
+    after_process = _string_literal(
+        values["after_process"][1], f"{where}.launch.after_process"
+    )
+    if mode not in LAUNCH_MODES:
+        raise ModelError(f"{where}.launch.mode: expected one of {sorted(LAUNCH_MODES)}")
+    if readiness not in LAUNCH_READINESS:
+        raise ModelError(
+            f"{where}.launch.readiness: expected one of {sorted(LAUNCH_READINESS)}"
+        )
+    if timeout <= 0:
+        raise ModelError(f"{where}.launch.timeout_s: must be greater than zero")
+    if order < 0:
+        raise ModelError(f"{where}.launch.order: must be non-negative")
+    return LaunchSpec(
+        mode=mode,
+        readiness=readiness,
+        timeout_s=timeout,
+        order=order,
+        after_process=after_process,
+    )
+
+
 def _parse_process(architecture: Any, name: str, usage: Any) -> Process:
     definition = _part_definition(architecture, usage.type_name)
-    attributes = _attributes(definition)
+    members = pycps_sysml2.effective_members(architecture, definition)
+    attributes = {
+        attribute_name: (attribute.type_name, attribute.value)
+        for attribute_name, attribute in members.attributes.items()
+    }
     where = f"part {name}"
     roles = _string_list(attributes, "roles", where)
     unknown = sorted(set(roles) - ROLES)
     if unknown:
         raise ModelError(f"{where}.roles: unknown role(s) {unknown}")
-    launch = _typed(attributes, "launch", "String", where)
-    if launch not in LAUNCHES:
-        raise ModelError(f"{where}.launch: expected one of {sorted(LAUNCHES)}")
+    launch = _launch_spec(architecture, definition, where)
     command = tuple(shlex.split(_typed(attributes, "command", "String", where)))
     if not command:
         raise ModelError(f"{where}.command: empty command line")
     ports = {
         port_name: _port_number(architecture, port.type_name, port_name, where)
-        for port_name, port in (definition.ports or {}).items()
+        for port_name, port in members.ports.items()
     }
     return Process(
         name=name,
@@ -480,7 +607,16 @@ def _parse_aircraft(architecture: Any, usage: Any) -> Aircraft:
                 target_port=connection.destination_port,
             )
         )
-    return Aircraft(system=model.name, components=tuple(components), wires=tuple(wires))
+    # Canonical qualified key: the entity plane and the system plane load the
+    # aircraft as a different primary/include root, so `stored_key` would drop
+    # the package on one side and keep it on the other.
+    key = f"{model.package}::{model.name}" if model.package else model.name
+    return Aircraft(
+        system=model.name,
+        key=key,
+        components=tuple(components),
+        wires=tuple(wires),
+    )
 
 
 def _parse_flows(architecture: Any, system: Any, multiplicity_parts: Iterable[str]) -> tuple[Flow, ...]:
@@ -605,7 +741,9 @@ def load_model(path: Path | str = DEFAULT_MODEL) -> SystemModel:
             f"architecture {architecture!r} does not exist; the system plane imports it"
         )
     imported_architecture = _load_architecture(imported)
-    includes: list[Path] = [imported]
+    # The SoS vocabulary is an included root, not a copy: the system plane
+    # imports PysosSoS::* and the checker supplies the shipped definitions.
+    includes: list[Path] = [imported, pysos_sysml.sos_definitions()]
     # The aircraft architecture imports the RPR entity dialect. pycps_sysml2
     # resolves imports across the roots it is given, so supply the bundled
     # definition as well instead of restating it in the system plane.
@@ -980,14 +1118,110 @@ def _check_identity(manifest: Mapping[str, Any], model: SystemModel, repo_root: 
     return problems
 
 
-def _check_entity_model(model: SystemModel, repo_root: Path) -> list[str]:
+def _check_entity_model(
+    manifest: Mapping[str, Any], model: SystemModel, repo_root: Path
+) -> list[str]:
+    """Prove the entity plane composes the same aircraft and agrees with the manifest."""
     path = repo_root / model.entity_model
     if not path.is_file():
         return [f"entity model {model.entity_model!r} does not exist"]
-    text = path.read_text(encoding="utf-8")
-    if "part def Federation" not in text:
-        return [f"entity model {model.entity_model!r} declares no 'part def Federation'"]
-    return []
+    try:
+        federation = entity_manifest.load_entity_model(path)
+    except (OSError, ValueError) as exc:  # SysMLError is a ValueError
+        return [f"entity model {model.entity_model!r}: {exc}"]
+
+    problems: list[str] = []
+    if federation.name != model.federation:
+        problems.append(
+            f"entity model {model.entity_model!r}: package {federation.name!r} "
+            f"!= federation {model.federation!r}"
+        )
+
+    occurrences: dict[str, tuple[Any, Any]] = {}
+    for instance in federation.instances:
+        if instance.aircraft != model.aircraft.key:
+            problems.append(
+                f"entity {instance.name}: aircraft {instance.aircraft!r} != "
+                f"system-plane {model.aircraft.key!r}; the entity plane must compose the imported model"
+            )
+        if instance.launch is None:
+            problems.append(f"entity {instance.name}: missing LaunchSpec")
+        for index in range(instance.count):
+            name = instance.name if instance.count == 1 else f"{instance.name}_{index + 1}"
+            occurrences[name] = (instance, instance.entities[index])
+
+    instances = _instances(manifest)
+    for name in sorted(set(occurrences) - set(instances)):
+        problems.append(f"entity {name}: declared but absent from the manifest")
+    for name, instance in instances.items():
+        if name not in occurrences:
+            problems.append(f"{name}: manifest instance has no entity-plane declaration")
+            continue
+        entity_instance, entity = occurrences[name]
+        declared = (instance.get("entities") or [{}])[0]
+        for key in ("site", "application", "entity", "marking"):
+            actual = str(getattr(entity, key))
+            expected = str(declared.get(key) or "")
+            if actual != expected:
+                problems.append(
+                    f"{name}: entity {key} {actual!r} != manifest {key} {expected!r}"
+                )
+        env = instance.get("env") or {}
+        if entity_instance.scenario != env.get("PYSOS_SCENARIO"):
+            problems.append(
+                f"{name}: scenario {entity_instance.scenario!r} != "
+                f"manifest env.PYSOS_SCENARIO {env.get('PYSOS_SCENARIO')!r}"
+            )
+        launch = entity_instance.launch
+        if launch is None:
+            continue
+        if launch.mode != "supervised":
+            problems.append(
+                f"{name}: launch mode {launch.mode!r}; the coordinator starts entity processes"
+            )
+        if env.get("PYSOS_LAUNCH_MODE") != launch.mode:
+            problems.append(
+                f"{name}: manifest env.PYSOS_LAUNCH_MODE does not match the entity LaunchSpec"
+            )
+        if env.get("PYSOS_READINESS") != launch.readiness:
+            problems.append(
+                f"{name}: manifest env.PYSOS_READINESS does not match the entity LaunchSpec"
+            )
+        if env.get("PYSOS_LAUNCH_ORDER") != str(launch.order):
+            problems.append(
+                f"{name}: manifest env.PYSOS_LAUNCH_ORDER does not match the entity LaunchSpec"
+            )
+        if env.get("PYSOS_AFTER_PROCESS") != launch.after_process:
+            problems.append(
+                f"{name}: manifest env.PYSOS_AFTER_PROCESS does not match the entity LaunchSpec"
+            )
+        if instance.get("startup_timeout") != launch.timeout_s:
+            problems.append(
+                f"{name}: manifest startup_timeout {instance.get('startup_timeout')!r} "
+                f"!= entity LaunchSpec {launch.timeout_s!r}"
+            )
+        if launch.after_process:
+            target = _launch_target(model, launch.after_process)
+            if target is None:
+                problems.append(
+                    f"{name}: entity launch.after_process {launch.after_process!r} names "
+                    f"no host process or a non-unique role"
+                )
+            elif "supervisor" not in target.roles:
+                problems.append(
+                    f"{name}: entity launch.after_process resolves to {target.name!r}, "
+                    f"which is not the supervisor"
+                )
+            elif launch.order < target.launch.order:
+                problems.append(
+                    f"{name}: entity launch.order {launch.order} < supervisor order "
+                    f"{target.launch.order}"
+                )
+        else:
+            problems.append(
+                f"{name}: entity LaunchSpec must name the supervisor in after_process"
+            )
+    return problems
 
 
 def _check_ports(manifest: Mapping[str, Any], model: SystemModel) -> list[str]:
@@ -1099,6 +1333,72 @@ def _check_processes(manifest: Mapping[str, Any], model: SystemModel) -> list[st
                 problems.append(
                     f"processes.{process.name}: --path {path!r} != recorder truth {expected!r}"
                 )
+    return problems
+
+
+def _launch_target(model: SystemModel, token: str) -> Process | None:
+    """Resolve an ``after_process`` token to one host process by name or role."""
+    for process in model.processes:
+        if process.name == token:
+            return process
+    owners = [process for process in model.processes if token in process.roles]
+    return owners[0] if len(owners) == 1 else None
+
+
+def _check_launch_graph(model: SystemModel) -> list[str]:
+    """Validate the launch order/dependency contract over host processes."""
+    problems: list[str] = []
+    by_name = {process.name: process for process in model.processes}
+    for process in model.processes:
+        token = process.launch.after_process
+        if not token:
+            continue
+        target = _launch_target(model, token)
+        if target is None:
+            problems.append(
+                f"processes.{process.name}: launch.after_process {token!r} names no "
+                f"process or a non-unique role"
+            )
+            continue
+        if process.launch.order < target.launch.order:
+            problems.append(
+                f"processes.{process.name}: launch.order {process.launch.order} < "
+                f"{target.name} order {target.launch.order}"
+            )
+    for process in model.processes:
+        if "builder" not in process.roles:
+            continue
+        if process.launch.after_process:
+            problems.append(
+                f"processes.{process.name}: a builder starts first and must not declare "
+                f"after_process {process.launch.after_process!r}"
+            )
+        if process.launch.order != 0:
+            problems.append(
+                f"processes.{process.name}: builder launch.order must be 0, "
+                f"found {process.launch.order}"
+            )
+    reported: set[frozenset[str]] = set()
+    for start in by_name:
+        chain: list[str] = []
+        cursor: str | None = start
+        while cursor is not None:
+            if cursor in chain:
+                cycle = frozenset(chain[chain.index(cursor) :])
+                if cycle not in reported:
+                    reported.add(cycle)
+                    problems.append(
+                        "processes.launch: dependency cycle " + " -> ".join([*chain, cursor])
+                    )
+                break
+            chain.append(cursor)
+            process = by_name[cursor]
+            target = (
+                _launch_target(model, process.launch.after_process)
+                if process.launch.after_process
+                else None
+            )
+            cursor = target.name if target is not None else None
     return problems
 
 
@@ -1345,13 +1645,14 @@ def check(
 
     problems: list[str] = []
     problems += _check_manifest(manifest, model)
-    problems += _check_entity_model(model, repo_root)
+    problems += _check_entity_model(manifest, model, repo_root)
     problems += _check_timing(manifest, model)
     problems += _check_frame(manifest, model, repo_root)
     problems += _check_identity(manifest, model, repo_root)
     problems += _check_ports(manifest, model)
     problems += _check_flows(manifest, model)
     problems += _check_processes(manifest, model)
+    problems += _check_launch_graph(model)
     problems += _check_source_ssp(manifest, model)
     problems += _check_artifacts(model)
     problems += _check_aircraft(model, repo_root, require=artifacts)

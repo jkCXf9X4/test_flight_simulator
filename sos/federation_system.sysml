@@ -5,9 +5,10 @@
 // Authored in SysML v2 and lowered by scripts/sos_model.py (pycps_sysml2 IR).
 // The entity plane — the four named aircraft instances with their ports,
 // scenarios and run parameters — stays in sos/aircraft_federation.sysml and is
-// lowered by pysos_sysml to the pysos_coordinate manifest. Two files because the
-// pysos_sysml subset rejects ports, connections and extra attributes; see
-// docs/sos_model.md §3.
+// lowered by pysos_sysml to the pysos_coordinate manifest. Both planes import
+// the same Aircraft model and the same PysosSoS::LaunchSpec vocabulary. Two
+// files remain because the pysos_sysml subset still rejects ports,
+// connections and timing; see docs/sos_model.md §3.
 //
 // The aircraft is imported from 3rd_party/airplane/architecture/aircraft.sysml
 // (package Aircraft) instead of being restated here. The SSP's
@@ -16,6 +17,7 @@
 // the imported model, component by component.
 package FederationSystem {
   private import Aircraft::*;
+  private import PysosSoS::*;
 
   // -- interfaces: the flow contract lives on the port type ---------------
   // The aircraft broadcasts RPR entity-state packets: one outbound edge per
@@ -77,27 +79,45 @@ package FederationSystem {
   // The orchestrator supervises the instance processes and listens on the
   // dedicated RPR fan-in port; it writes truth/measure/rrd, never a live JSON
   // stream.
-  part def Orchestrator {
+  part def Orchestrator :> Application {
     port rpr_in : RprListener;
     attribute roles : String = "supervisor,recorder";
-    attribute launch : String = "operator";
     attribute cwd : String = ".";
     attribute command : String = "python scripts/run_e2e_rpr.py --manifest manifests/aircraft_federation.manifest.json --scenario 3rd_party/airplane/resources/scenarios/test_scenario.json --run-dir build/runs/sos4 --realtime";
+    part launch : LaunchSpec {
+      attribute mode : String = "operator";
+      attribute readiness : String = "port_bound";
+      attribute timeout_s : Real = 30.0;
+      attribute order : Integer = 1;
+      attribute after_process : String = "builder";
+    }
   }
 
   // The viewer replays the recorder truth stream; it owns no UDP socket.
-  part def Viewer {
+  part def Viewer :> Application {
     attribute roles : String = "visualizer";
-    attribute launch : String = "manual";
     attribute cwd : String = ".";
     attribute command : String = "python -m flight_viewer --source jsonl --path build/runs/sos4/truth.jsonl --sink rerun --spawn --scenario 3rd_party/airplane/resources/scenarios/test_scenario.json --realtime";
+    part launch : LaunchSpec {
+      attribute mode : String = "manual";
+      attribute readiness : String = "none";
+      attribute timeout_s : Real = 30.0;
+      attribute order : Integer = 2;
+      attribute after_process : String = "recorder";
+    }
   }
 
-  part def Builder {
+  part def Builder :> Application {
     attribute roles : String = "builder";
-    attribute launch : String = "operator";
     attribute cwd : String = ".";
     attribute command : String = "python scripts/build_airplane.py";
+    part launch : LaunchSpec {
+      attribute mode : String = "operator";
+      attribute readiness : String = "none";
+      attribute timeout_s : Real = 30.0;
+      attribute order : Integer = 0;
+      attribute after_process : String = "";
+    }
   }
 
   part def Artifacts {

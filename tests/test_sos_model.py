@@ -8,6 +8,7 @@ import zipfile
 from dataclasses import replace
 from pathlib import Path
 
+import entity_manifest
 import prepare_instance_bundle
 import pytest
 import sos_model
@@ -161,6 +162,70 @@ def test_system_plane_is_authored_in_sysml_v2():
     model = _model()
     assert (REPO_ROOT / model.entity_model).is_file()
     assert model.instance_count == len(_manifest()["instances"])
+
+
+def test_entity_plane_composes_the_imported_aircraft():
+    model = _model()
+    federation = entity_manifest.load_entity_model(REPO_ROOT / model.entity_model)
+
+    assert federation.name == model.federation
+    assert model.aircraft.key == "Aircraft::AircraftModel"
+    for instance in federation.instances:
+        assert instance.aircraft == model.aircraft.key
+        assert instance.launch is not None
+        assert instance.launch.mode == "supervised"
+
+
+def test_host_processes_declare_the_shared_launch_vocabulary():
+    processes = {process.name: process for process in _model().processes}
+
+    assert processes["orchestrator"].launch.mode == "operator"
+    assert processes["orchestrator"].launch.readiness == "port_bound"
+    assert processes["orchestrator"].launch.order == 1
+    assert processes["orchestrator"].launch.after_process == "builder"
+    assert processes["viewer"].launch.mode == "manual"
+    assert processes["viewer"].launch.after_process == "recorder"
+    assert processes["builder"].launch.readiness == "none"
+    assert processes["builder"].launch.order == 0
+    assert processes["builder"].launch.after_process == ""
+
+    launch = _model().process("orchestrator").launch
+    assert launch.timeout_s == 30.0
+
+
+def test_entity_launch_drift_is_reported():
+    manifest = _manifest()
+    instance = _instance(manifest, "red_striker")
+    instance["env"]["PYSOS_READINESS"] = "log_line"
+    instance["startup_timeout"] = 5.0
+
+    problems = sos_model.check(manifest, _model())
+
+    assert any("red_striker: manifest env.PYSOS_READINESS" in item for item in problems)
+    assert any("red_striker: manifest startup_timeout 5.0" in item for item in problems)
+
+
+def test_launch_dependency_cycle_is_reported():
+    model = _model()
+    processes = tuple(
+        replace(process, launch=replace(process.launch, after_process="viewer"))
+        if process.name == "orchestrator"
+        else process
+        for process in model.processes
+    )
+
+    problems = sos_model.check(_manifest(), replace(model, processes=processes))
+
+    assert any("processes.launch: dependency cycle" in item for item in problems)
+
+
+def test_entity_identity_drift_is_reported():
+    manifest = _manifest()
+    _instance(manifest, "blue_cas")["entities"][0]["marking"] = "WRONG"
+
+    problems = sos_model.check(manifest, _model())
+
+    assert any("blue_cas: entity marking 'BLUE-1' != manifest marking 'WRONG'" in item for item in problems)
 
 
 def test_instance_count_must_match_the_manifest():
