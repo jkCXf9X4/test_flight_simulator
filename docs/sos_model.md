@@ -167,7 +167,7 @@ never restates it.
 Entity-plane instance command (one line per application in the SysML):
 
 ```
-python scripts/run_instance_process.py --realtime --variant RedStriker
+../venv/bin/python scripts/run_instance_process.py --realtime --variant RedStriker
 ```
 
 `run_instance_process.py` derives its 1-based index (ports, defaults) from

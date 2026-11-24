@@ -12,6 +12,10 @@
 # RERUN_WEB=1 swaps the native viewer window for the Rerun web viewer, fed
 # over gRPC and opened in a dedicated Chrome instance that enables the
 # SwiftShader WebGL2 fallback (plain Chrome refuses WebGL2 on GPU-less hosts).
+#
+# MANIFEST=<path> runs that federation manifest instead of the default
+# two-instance federation built from the flags (e.g.
+# manifests/aircraft_federation.manifest.json for the four aircraft).
 
 set -euo pipefail
 
@@ -20,6 +24,7 @@ IMAGE_NAME="${IMAGE_NAME:-test-flight-simulator-rerun:latest}"
 CONTAINER_NAME="${CONTAINER_NAME:-test-flight-simulator-rerun}"
 RERUN_CONTAINER="${RERUN_CONTAINER:-0}"
 SCENARIO_PATH="${SCENARIO_PATH:-3rd_party/airplane/resources/scenarios/test_scenario.json}"
+MANIFEST="${MANIFEST:-}"
 RUN_DIR="${RUN_DIR:-build/results/e2e}"
 TRUTH_PATH="${TRUTH_PATH:-$RUN_DIR/truth.jsonl}"
 STOP_TIME="${STOP_TIME:-30.0}"
@@ -145,13 +150,18 @@ if [[ -z "$PYTHON" ]]; then
 fi
 
 echo "Starting federation (realtime) ..."
+SIM_ARGS=(
+  --realtime
+  --stop-time "$STOP_TIME"
+  --run-dir "$RUN_DIR"
+  --scenario "$SCENARIO_PATH"
+)
+if [[ -n "$MANIFEST" ]]; then
+  SIM_ARGS+=(--manifest "$MANIFEST")
+fi
 (
   cd "$REPO_ROOT"
-  exec setsid "$PYTHON" ./scripts/run_e2e_rpr.py \
-    --realtime \
-    --stop-time "$STOP_TIME" \
-    --run-dir "$RUN_DIR" \
-    --scenario "$SCENARIO_PATH"
+  exec setsid "$PYTHON" ./scripts/run_e2e_rpr.py "${SIM_ARGS[@]}"
 ) &
 SIM_PID=$!
 

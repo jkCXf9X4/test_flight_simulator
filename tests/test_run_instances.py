@@ -79,6 +79,31 @@ def test_launch_flags_are_translated_into_the_spec(monkeypatch):
     assert spec.instances[0].telemetry[0].port == 5510
 
 
+def test_manifest_stop_time_overrides_every_instance(monkeypatch):
+    _FakeFederation.instances.clear()
+    monkeypatch.setattr(run_instances, "Federation", _FakeFederation)
+
+    assert (
+        run_instances.main(
+            [
+                "--manifest",
+                str(instance_manifest.DEFAULT_MANIFEST),
+                "--stop-time",
+                "3",
+                "--python",
+                "python3",
+            ]
+        )
+        == 0
+    )
+
+    spec = _FakeFederation.instances[0].spec
+    assert spec.instances
+    for instance in spec.instances:
+        assert instance.command.count("--stop-time") == 1
+        assert instance.command[-2:] == ["--stop-time", "3.0"]
+
+
 @pytest.mark.parametrize("flag", ["--control-port", "--bridge-input"])
 def test_bridge_control_flags_are_gone(flag):
     """The JSON bridge is gone, so the launcher no longer accepts its flags."""

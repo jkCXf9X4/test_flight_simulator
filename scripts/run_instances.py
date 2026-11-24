@@ -9,8 +9,9 @@ and hands it to ``pysos_coordinate.Federation``. Each instance command runs
 
 The old single-scenario flags (``--instances``, ``--source-ssp``, ``--out-dir``,
 ``--stop-time``, ``--realtime``, ``--python``) keep their meaning; ``--manifest``
-runs a checked-in manifest with the project interpreter substituted, and
-``--dry-run`` validates without launching anything.
+runs a checked-in manifest with the project interpreter substituted and
+``--stop-time`` overriding each instance's duration if given, and ``--dry-run``
+validates without launching anything.
 """
 
 from __future__ import annotations
@@ -77,6 +78,19 @@ def apply_python(spec, python: str):
     return spec
 
 
+def apply_stop_time(spec, stop_time: float):
+    """Override every instance's ``--stop-time``, keeping the flag meaningful for manifests."""
+
+    value = str(float(stop_time))
+    for instance in spec.instances:
+        command = instance.command
+        for index in range(len(command) - 1, -1, -1):
+            if command[index] == "--stop-time":
+                del command[index : index + 2]
+        instance.command += ["--stop-time", value]
+    return spec
+
+
 def describe(spec) -> None:
     print(f"federation: {spec.name} ({len(spec.instances)} instance(s), schema {spec.schema}, timing {spec.timing.value})")
     for instance in spec.instances:
@@ -94,6 +108,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.manifest is not None:
             spec = load_spec(args.manifest)
+            if args.stop_time is not None:
+                spec = apply_stop_time(spec, args.stop_time)
         else:
             spec = build_spec(
                 instances=args.instances,

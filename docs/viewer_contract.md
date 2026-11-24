@@ -142,7 +142,7 @@ Python 3.11, package `flight_viewer`, no imports of `rclpy` anywhere.
   original `timestamp` pacing when `realtime=True`.
 
 `cli.py`
-- `python -m flight_viewer --source {json-udp,dis,jsonl} --sink {rerun,dis,jsonl}`
+- `../venv/bin/python -m flight_viewer --source {json-udp,dis,jsonl} --sink {rerun,dis,jsonl}`
   with `--host`, `--port`, `--telemetry`, `--transport {unicast,multicast}`,
   `--group`, `--interface`, `--ttl`, `--scenario`, `--config`, `--origin-lat`,
   `--origin-lon`, `--origin-alt`, `--entity-site`, `--entity-application`,

@@ -266,6 +266,11 @@ $PY scripts/run_e2e_rpr.py --manifest manifests/aircraft_federation.manifest.jso
 # Without a manifest, --instances N builds the default scenario N times
 $PY scripts/run_e2e_rpr.py --instances 2
 
+# Omitted --stop-time falls back to rpr_e2e.DEFAULT_STOP_TIME_S (6 s), not the
+# SoS Timing duration. For the full aircraft federation pass its 120 s explicitly:
+$PY scripts/run_e2e_rpr.py --manifest manifests/aircraft_federation.manifest.json \
+    --stop-time 120 --run-dir build/runs/sos4 --realtime
+
 # Rerun load check (viewer-side exit code)
 $PY -m rerun rrd verify build/runs/e2e/recording.rrd
 

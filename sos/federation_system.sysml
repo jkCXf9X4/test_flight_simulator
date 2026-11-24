@@ -69,7 +69,7 @@ package FederationSystem {
     attribute rprPort : Integer = 5505;
     attribute roles : String = "supervisor,recorder";
     attribute cwd : String = ".";
-    attribute command : String = "python scripts/run_e2e_rpr.py --manifest manifests/aircraft_federation.manifest.json --scenario 3rd_party/airplane/resources/scenarios/test_scenario.json --run-dir build/runs/sos4 --realtime";
+    attribute command : String = "python scripts/run_e2e_rpr.py --manifest manifests/aircraft_federation.manifest.json --scenario 3rd_party/airplane/resources/scenarios/test_scenario.json --run-dir build/runs/sos4 --stop-time 120 --realtime";
     part launch : LaunchSpec {
       attribute mode : String = "operator";
       attribute readiness : String = "port_bound";
