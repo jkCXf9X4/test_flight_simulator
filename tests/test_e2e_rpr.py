@@ -17,14 +17,18 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
+import instance_manifest
 import pytest
 import rpr_e2e
+import run_e2e_rpr
 from pyfmi_interop.ir import ModelDefinition
 from pyfmi_interop.wire import PayloadFormat
 from pyfmi_interop.wire import encode as encode_wire_frame
-from pysos_interop import EntityKey, EntityState
+from pysos_interop import EntityKey, EntityState, UnixChannel
 from pysos_interop.rpr import RprOrigin, encode_entity_state
 from pysos_interop.truth import entity_slug, iter_truth
 
@@ -82,10 +86,7 @@ def _label_texts(rrd_path):
     return texts
 
 
-@pytest.mark.skipif(SKIP_REASON is not None, reason=SKIP_REASON or "")
-def test_e2e_rpr_acceptance(tmp_path):
-    result = rpr_e2e.run_e2e(run_dir=tmp_path / "run", stop_time=6.0)
-
+def _assert_full_acceptance(result):
     assert result.exit_codes == {"instance-1": 0, "instance-2": 0}
     assert not result.timed_out
 
@@ -166,11 +167,69 @@ def test_e2e_rpr_acceptance(tmp_path):
 
 
 @pytest.mark.skipif(SKIP_REASON is not None, reason=SKIP_REASON or "")
+def test_e2e_rpr_acceptance_defaults_to_unix_abstract(tmp_path):
+    result = rpr_e2e.run_e2e(run_dir=tmp_path / "run-abstract", stop_time=6.0)
+
+    assert result.transport == "unix"
+    assert result.recorder_address == "@run-abstract-recorder"
+    assert result.instance_addresses == {
+        "instance-1": "@run-abstract-instance-1",
+        "instance-2": "@run-abstract-instance-2",
+    }
+    summary = json.loads(result.run_json.read_text(encoding="utf-8"))
+    assert summary["transport"]["mode"] == "unix"
+    assert summary["ports"] == {}
+    assert summary["recorder_address"] == "@run-abstract-recorder"
+
+    _assert_full_acceptance(result)
+
+
+@pytest.mark.skipif(SKIP_REASON is not None, reason=SKIP_REASON or "")
+def test_e2e_rpr_acceptance_unix_pathname_against_udp_manifest(tmp_path):
+    sockets = tmp_path / "sockets"
+    result = rpr_e2e.run_e2e(
+        run_dir=tmp_path / "run-pathname",
+        stop_time=6.0,
+        manifest_path=instance_manifest.DEFAULT_MANIFEST,
+        unix_dir=sockets,
+    )
+
+    # Default unix retargets a schema-1 UDP manifest; the UDP endpoint data is
+    # ignored, and the run records the pathname sockets instead of ports.
+    assert result.transport == "unix"
+    assert result.recorder_address == str(sockets.resolve() / "recorder.sock")
+    summary = json.loads(result.run_json.read_text(encoding="utf-8"))
+    assert summary["transport"]["mode"] == "unix"
+    assert summary["ports"] == {}
+
+    _assert_full_acceptance(result)
+
+
+@pytest.mark.skipif(SKIP_REASON is not None, reason=SKIP_REASON or "")
+def test_e2e_rpr_acceptance_udp_escape_hatch(tmp_path):
+    result = rpr_e2e.run_e2e(
+        run_dir=tmp_path / "run-udp", stop_time=6.0, transport="udp"
+    )
+
+    assert result.transport == "udp"
+    assert result.recorder_address is None
+    summary = json.loads(result.run_json.read_text(encoding="utf-8"))
+    assert summary["ports"]["rpr"] == rpr_e2e.RPR_UDP_PORT
+    assert set(summary["ports"]["instance_bind"]) == {"instance-1", "instance-2"}
+    assert {"InDatagrams", "RcvbufErrors"} <= set(
+        summary["transport"]["kernel_udp"]
+    )
+
+    _assert_full_acceptance(result)
+
+
+@pytest.mark.skipif(SKIP_REASON is not None, reason=SKIP_REASON or "")
 def test_four_aircraft_federation_runs_distinct_scenarios(tmp_path):
     result = rpr_e2e.run_e2e(
         run_dir=tmp_path / "sos4",
         stop_time=3.0,
         manifest_path=SOS_MANIFEST,
+        transport="udp",
     )
 
     assert result.exit_codes == {
@@ -213,6 +272,8 @@ def test_four_aircraft_federation_runs_distinct_scenarios(tmp_path):
 
     summary = json.loads(result.run_json.read_text(encoding="utf-8"))
     transport = summary["transport"]
+    assert result.transport == "udp"
+    assert transport["mode"] == "udp"
     assert transport["recorder"]["error"] is None
     assert transport["recorder"]["decode_errors"] == 0
     assert transport["recorder"]["datagrams"] >= sum(
@@ -373,3 +434,264 @@ def test_drain_burst_returns_every_queued_datagram():
         receiver.close()
 
     assert burst == payloads
+
+
+def _unix_recorder(address: str, truth_path: Path) -> rpr_e2e.RprTruthRecorder:
+    return rpr_e2e.RprTruthRecorder(
+        host="127.0.0.1",
+        port=0,
+        address=address,
+        origin=ORIGIN,
+        expected_keys={
+            entity_slug(key): key
+            for key in (EntityKey(1, 1, 1), EntityKey(1, 1, 2))
+        },
+        truth_path=truth_path,
+        run_id="unix-wire-test",
+        sample_period_s=0.02,
+        watchdog_s=0.05,
+    )
+
+
+def _send_two_entities(destination: str) -> None:
+    with UnixChannel(destination) as first, UnixChannel(destination) as second:
+        for sequence in range(3):
+            first.send(
+                _fmu_frame(_state(1, east_m=sequence), instance=1, sequence=sequence)
+            )
+            second.send(
+                _fmu_frame(_state(2, east_m=sequence), instance=2, sequence=sequence)
+            )
+
+
+def _assert_two_entity_recording(
+    recorder: rpr_e2e.RprTruthRecorder, truth_path: Path
+) -> None:
+    assert recorder.error is None, recorder.error_traceback
+    assert recorder.datagrams == 6
+    assert recorder.decode_errors == 0
+    assert dict(recorder.frames) == {"1_1_1": 3, "1_1_2": 3}
+    assert recorder.samples == 3
+
+    states = list(iter_truth(truth_path))
+    assert len(states) == 6
+    assert {state.marking for state in states} == {"AC-1", "AC-2"}
+
+    metadata = json.loads(truth_path.with_suffix(".meta.json").read_text(encoding="utf-8"))
+    assert metadata["sample_count"] == recorder.samples
+    assert {entity["entity"] for entity in metadata["entities"]} == {"1_1_1", "1_1_2"}
+
+
+def test_recorder_reads_wire_frames_over_unix_pathname(tmp_path):
+    """Two broadcasters reach the recorder through one pathname datagram socket."""
+
+    truth_path = tmp_path / "truth.jsonl"
+    socket_path = tmp_path / "sockets" / "recorder.sock"
+    socket_path.parent.mkdir()
+    recorder = _unix_recorder(str(socket_path), truth_path)
+    try:
+        recorder.start()
+        assert recorder.ready.wait(timeout=3.0)
+        assert recorder.error is None
+        assert recorder.bound_address == str(socket_path)
+        assert recorder.bound_port is None
+        _send_two_entities(str(socket_path))
+        time.sleep(0.1)
+    finally:
+        recorder.stop_event.set()
+        recorder.join(timeout=5.0)
+
+    _assert_two_entity_recording(recorder, truth_path)
+
+
+def test_recorder_reads_wire_frames_over_unix_abstract(tmp_path):
+    """The abstract namespace variant needs no filesystem socket path."""
+
+    name = f"rpr-test-{uuid.uuid4().hex[:12]}"
+    address = f"@{name}-recorder"
+    truth_path = tmp_path / "truth.jsonl"
+    recorder = _unix_recorder(address, truth_path)
+    try:
+        recorder.start()
+        assert recorder.ready.wait(timeout=3.0)
+        assert recorder.error is None
+        assert recorder.bound_address == address
+        _send_two_entities(address)
+        time.sleep(0.1)
+    finally:
+        recorder.stop_event.set()
+        recorder.join(timeout=5.0)
+
+    _assert_two_entity_recording(recorder, truth_path)
+
+
+def test_plan_unix_addresses_and_endpoints_registry(tmp_path):
+    recorder, instances = rpr_e2e.plan_unix_addresses(
+        tmp_path / "run dir!", ["instance-1", "instance-2"]
+    )
+    assert recorder == "@run-dir-recorder"
+    assert instances == {
+        "instance-1": "@run-dir-instance-1",
+        "instance-2": "@run-dir-instance-2",
+    }
+
+    recorder, instances = rpr_e2e.plan_unix_addresses(
+        tmp_path, ["instance-1"], unix_dir=tmp_path / "sock dir"
+    )
+    directory = (tmp_path / "sock dir").resolve()
+    assert recorder == str(directory / "recorder.sock")
+    assert instances == {"instance-1": str(directory / "instance-1.sock")}
+
+    endpoints = rpr_e2e.write_endpoints_json(
+        tmp_path / "run" / "endpoints.json",
+        recorder=recorder,
+        instances=instances,
+    )
+    assert json.loads(endpoints.read_text(encoding="utf-8")) == {
+        "transport": "unix",
+        "recorder": recorder,
+        "instances": instances,
+    }
+
+
+def test_retarget_rewrites_unix_manifest_for_explicit_udp(tmp_path):
+    spec = instance_manifest.build_spec(
+        instances=2, transport="unix", out_dir=tmp_path / "bundles"
+    )
+    spec = rpr_e2e._retarget(
+        spec,
+        out_dir=tmp_path / "run" / "instances",
+        stop_time=3.0,
+        realtime=False,
+        transport="udp",
+        rpr_port=rpr_e2e.RPR_UDP_PORT,
+    )
+
+    ports = []
+    for index, instance in enumerate(spec.instances, start=1):
+        command = instance.command
+        port = int(instance.env["PYSOS_TELEMETRY_PORT"])
+        ports.append(port)
+        assert command[command.index("--transport") + 1] == "udp"
+        assert command[command.index("--bind-address") + 1] == f"127.0.0.1:{port}"
+        assert command[command.index("--peer-address") + 1] == (
+            f"127.0.0.1:{rpr_e2e.RPR_UDP_PORT}"
+        )
+        assert command[command.index("--instance") + 1] == str(index)
+        assert instance.env["PYSOS_TRANSPORT"] == "udp"
+        assert "PYSOS_TELEMETRY_PATH" not in instance.env
+        endpoint = instance.telemetry[0]
+        assert endpoint.transport == "udp"
+        assert endpoint.port == port
+
+    assert len(set(ports)) == len(ports)
+    assert rpr_e2e.RPR_UDP_PORT not in ports
+    for port in ports:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.bind(("127.0.0.1", port))
+
+
+def test_retarget_leaves_udp_manifest_addresses_untouched(tmp_path):
+    spec = instance_manifest.build_spec(
+        instances=2, transport="udp", out_dir=tmp_path / "bundles"
+    )
+    before = [
+        (dict(instance.env), list(instance.telemetry)) for instance in spec.instances
+    ]
+
+    spec = rpr_e2e._retarget(
+        spec,
+        out_dir=tmp_path / "run" / "instances",
+        stop_time=3.0,
+        realtime=False,
+        transport="udp",
+        rpr_port=rpr_e2e.RPR_UDP_PORT,
+    )
+
+    for (env, telemetry), instance in zip(before, spec.instances, strict=True):
+        assert instance.env == env
+        assert instance.telemetry == telemetry
+        for flag in ("--transport", "--bind-address", "--peer-address"):
+            assert flag not in instance.command
+
+
+def test_cli_transport_defaults_to_unix():
+    args = run_e2e_rpr.parse_args([])
+    assert args.transport == "unix"
+    assert args.unix_dir is None
+    assert args.unix_prefix is None
+
+
+def test_cli_forwards_the_unix_default(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run_e2e(**kwargs):
+        captured.update(kwargs)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(run_e2e_rpr.rpr_e2e, "run_e2e", fake_run_e2e)
+    with pytest.raises(SystemExit):
+        run_e2e_rpr.main(["--run-dir", str(tmp_path / "run")])
+
+    assert captured["transport"] == "unix"
+    assert captured["unix_dir"] is None
+
+
+def test_cli_unix_flags_plumb_into_run_e2e(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run_e2e(**kwargs):
+        captured.update(kwargs)
+        run_dir = Path(kwargs["run_dir"])
+        run_dir.mkdir(parents=True, exist_ok=True)
+        artifacts = {}
+        for name in (
+            "truth.jsonl",
+            "truth.meta.json",
+            "measurements.csv",
+            "recording.rrd",
+            "comparison.csv",
+            "separation.csv",
+            "run.json",
+        ):
+            path = run_dir / name
+            path.write_text("x", encoding="utf-8")
+            artifacts[name] = path
+        return SimpleNamespace(
+            run_dir=run_dir,
+            truth_jsonl=artifacts["truth.jsonl"],
+            metadata_json=artifacts["truth.meta.json"],
+            measure_csv=artifacts["measurements.csv"],
+            rrd_path=artifacts["recording.rrd"],
+            comparison_csv=artifacts["comparison.csv"],
+            separation_csv=artifacts["separation.csv"],
+            run_json=artifacts["run.json"],
+            samples=1,
+            frames={},
+            partial_samples=0,
+            separation_m={"min_m": 1.0, "mean_m": 1.0, "max_m": 1.0},
+            entities={},
+            exit_codes={"instance-1": 0},
+            timed_out=False,
+            transport="unix",
+            recorder_address="@fed-recorder",
+        )
+
+    monkeypatch.setattr(run_e2e_rpr.rpr_e2e, "run_e2e", fake_run_e2e)
+    code = run_e2e_rpr.main(
+        [
+            "--transport",
+            "unix",
+            "--unix-dir",
+            str(tmp_path / "socks"),
+            "--unix-prefix",
+            "fed",
+            "--run-dir",
+            str(tmp_path / "run"),
+        ]
+    )
+
+    assert code == 0
+    assert captured["transport"] == "unix"
+    assert captured["unix_dir"] == tmp_path / "socks"
+    assert captured["unix_prefix"] == "fed"

@@ -25,8 +25,8 @@ $PY scripts/sos_model.py --artifacts            # proved against the fresh artif
 `scripts/export_aircraft_variants.py`, so the four variant archives are always
 rebuilt with the FMUs; `--skip-variant-export` skips that step.
 
-`build_airplane.py` resolves an interpreter that imports `pyssp_sysml2`,
-`pyssp_standard`, `pyssp_workflow` and `pycps_sysml2` and has `pyfmi`
+`build_airplane.py` resolves an interpreter that imports `pyssp_sysml`,
+`pyssp_standard`, `pyssp_workflow` and `pycps_sysml` and has `pyfmi`
 (`$PYTHON`, workspace venv, airplane venv, then the running interpreter), so it
 never silently falls back to a bare system `python3`. `check_environment.sh
 --source-build` applies the same resolution and also checks `omc`, `cmake` and a
@@ -49,7 +49,7 @@ A run is complete only when all of the following are decided somewhere, once:
 | launch contract: mode, readiness, timeout, order, dependency | entity plane `PysosSoS::LaunchSpec` → `startup_timeout` + `env.PYSOS_LAUNCH_MODE`/`PYSOS_READINESS`/`PYSOS_LAUNCH_ORDER`/`PYSOS_AFTER_PROCESS` |
 | aircraft composition a variant builds on | entity plane `AircraftVariant :> AircraftModel`; the four variant roots inherit it |
 | runnable variant selection | entity plane application `command` `--variant <Variant>` |
-| per-instance RPR bind endpoint (one-way broadcast to the recorder) | entity plane variant `Transport` set (`bind_address`) → exported SSP |
+| per-instance RPR bind endpoint (one-way broadcast to the recorder) | entity plane variant `Transport` set (`bind_address`) → exported SSP; manifest endpoint is `{"transport": "unix", "path": ...}` (schema 2, the default) or `host:port` (schema 1, explicit UDP) |
 | entity identity: site/application/entity and marking in the broadcast | entity plane variant `Identity` set → exported SSP |
 | scenario/mission per entity | entity plane variant `Scenario` set → exported SSP; the application `scenario` names it in `PYSOS_SCENARIO` |
 | run parameters per instance: placement, waypoint frame, reference origin (realtime on the command, stop time from `Timing`) | entity plane variant sets + application `waypointFrame` → exported SSP |
@@ -62,11 +62,13 @@ A run is complete only when all of the following are decided somewhere, once:
 | artifacts: run directory and the files the run is judged by | system plane |
 
 The entity plane is lowered, not re-authored: `pysos_sysml` turns the SysML
-federation into the `pysos_coordinate` manifest (schema 1). The system plane is
-a project document. No fact is written down twice: per-variant values live once
-in the variant `ParameterSet` sets and reach the run through the exported SSP;
-the manifest carries the process facts. `scripts/sos_model.py` resolves the
-system plane *against* the manifest and fails on any gap.
+federation into the `pysos_coordinate` manifest (schema 2 when an endpoint is
+`{"transport": "unix", "path": ...}`, the default; schema 1 for explicit UDP).
+The system plane is a project
+document. No fact is written down twice: per-variant values live once in the
+variant `ParameterSet` sets and reach the run through the exported SSP; the
+manifest carries the process facts. `scripts/sos_model.py` resolves the system
+plane *against* the manifest and fails on any gap.
 
 The aircraft and its participants are **imported, not restated**:
 `sos/federation_system.sysml` says `private import Aircraft::*;` and
@@ -87,7 +89,7 @@ if a participant part is missing, typed with another participant def, or declare
 out of order, and it walks each variant's `specializes` chain to prove it
 reaches `AircraftModel`.
 
-Import resolution works with the shipped `pycps_sysml2`; the model names the
+Import resolution works with the shipped `pycps_sysml`; the model names the
 architecture and entity files, and the checker supplies the `PysosSoS`,
 `PysspCore` and `RprEntity` include roots. The
 SSP's `SystemStructure.ssd` stays authoritative for field-level wiring;
@@ -96,9 +98,9 @@ duplicating 286 scalar connectors in SysML.
 
 | aircraft parameter | value | where it comes from |
 | --- | --- | --- |
-| `rpr_entity.transport` | `udp` | variant `Transport` set → exported SSP |
-| `rpr_entity.bind_address` | 5510, 5512, 5514, 5516 | variant `Transport.bind_address` → exported SSP |
-| `rpr_entity.peer_address` | `127.0.0.1:5505` | variant `Transport.peer_address` → exported SSP |
+| `rpr_entity.transport` | `unix` | variant `Transport` set → exported SSP |
+| `rpr_entity.bind_address` | `@pysos-red-interceptor`, `@pysos-red-striker`, `@pysos-blue-cas`, `@pysos-blue-baseline` | variant `Transport.bind_address` → exported SSP |
+| `rpr_entity.peer_address` | `@pysos-recorder` | variant `Transport.peer_address` → exported SSP |
 | `rpr_state_source.entity_site` / `entity_application` / `entity_entity` | 1 / 1 / 1–4 | variant `Identity` set → exported SSP |
 | `rpr_state_source.marking_characters` | RED-1, RED-2, BLUE-1, BLUE-2 | variant `Identity` set → exported SSP |
 | `rpr_state_source.reference_latitude_deg` / `reference_longitude_deg` / `reference_altitude_m` | −2.957519 / 39.232955 / 0 | variant `Identity` set (equals `FrameOrigin`) → exported SSP |
@@ -114,8 +116,8 @@ system-of-systems layer, not for the aircraft model.
 | piece | what it actually owns | verdict at SoS level |
 | --- | --- | --- |
 | `experimental_pyssp_standard` (SSP/SSD/SSV/SSM) | describes and packs FMU composition: components, connectors, connections, parameter sets/mappings, `DefaultExperiment`; no executor | **rejected as the SoS model, adopted inside an instance.** Components are FMUs and connections are FMI connectors, so an entity's internals belong here (`build/ssp/scenario.ssp`), but a process federation is not an SSP. `pyssp_standard` has no process, timing policy, entity identity or frame. |
-| `pysos_sysml` | lowers one SysML package of `part` usages to the coordinator manifest | **adopted for the entity plane.** It now uses the `pycps_sysml2` base for imports/include roots, entity composition (`part aircraft : AircraftModel`) and the shared `PysosSoS::LaunchSpec`. It still rejects ports, connections and timing, so run parameters ride in the exported variant SSPs and the application names its variant on the command line. The entity plane and the system plane therefore compose the same imported `AircraftModel` instead of restating it. |
-| `pycps_sysml2` (the SysML v2 IR) | parses packages, part/port definitions, part usages, port usages, connections and typed attribute values (`Real`, `Integer`, `Boolean`, `String`) | **adopted as the system-plane lowering.** It already carries what `pysos_sysml` rejects, so the system plane is authored as SysML v2 and lowered here. Gap: part-usage multiplicity is dropped; the model no longer relies on it — participant count and order come from `AircraftFederation::Federation` through `effective_members`. It also carries cross-package imports (`Architecture.imports`), which is how the aircraft architecture and the entity plane are pulled in. |
+| `pysos_sysml` | lowers one SysML package of `part` usages to the coordinator manifest | **adopted for the entity plane.** It now uses the `pycps_sysml` base for imports/include roots, entity composition (`part aircraft : AircraftModel`) and the shared `PysosSoS::LaunchSpec`. It still rejects ports, connections and timing, so run parameters ride in the exported variant SSPs and the application names its variant on the command line. The entity plane and the system plane therefore compose the same imported `AircraftModel` instead of restating it. |
+| `pycps_sysml` (the SysML v2 IR) | parses packages, part/port definitions, part usages, port usages, connections and typed attribute values (`Real`, `Integer`, `Boolean`, `String`) | **adopted as the system-plane lowering.** It already carries what `pysos_sysml` rejects, so the system plane is authored as SysML v2 and lowered here. Gap: part-usage multiplicity is dropped; the model no longer relies on it — participant count and order come from `AircraftFederation::Federation` through `effective_members`. It also carries cross-package imports (`Architecture.imports`), which is how the aircraft architecture and the entity plane are pulled in. |
 | `pysos_coordinate` | process supervision: spawn, log, SIGTERM/SIGKILL by process group, exit codes | **adopted.** It owns no clock: `timing` accepts only `wall_clock` and is never read by the supervisor; `startup_timeout` is validated but unenforced; there is no readiness gate, heartbeat or restart. The timing contract below records this instead of pretending otherwise. |
 | `ssp4sim` + `pyssp4sim` | per-instance fixed-step FMI 2.0 CS execution, absolute-deadline wall-clock pacing | **adopted, one process per instance.** `realtime: true` is a blocking `sleep_until` from a `CLOCK_MONOTONIC` reference captured at executor construction; no drift estimate and no overrun policy (an overrun free-runs until it catches up). There is no external `doStep`, pause or command channel. |
 | `pyssp_simulate` | config construction, backend dispatch, result CSV reading | **adopted** as the thin wrapper that runs the ssp4sim child process. |
@@ -144,8 +146,8 @@ sos/aircraft_federation.sysml     entity plane, SysML v2, lowered by pysos_sysml
   │                               waypointFrame, LaunchSpec
   ├─ four participants            part aircraft / part application / port telemetry
   └─ part def Federation          four scalar participant usages
-     └─ manifests/aircraft_federation.manifest.json   schema 1 (pysos_coordinate)
-sos/federation_system.sysml       system plane, SysML v2, lowered by pycps_sysml2
+     └─ manifests/aircraft_federation.manifest.json   schema 2 unix (pysos_coordinate)
+sos/federation_system.sysml       system plane, SysML v2, lowered by pycps_sysml
   ├─ private import Aircraft::*   the same composition, parameters, FMU sources
   ├─ private import AircraftFederation::*  participants, their types and order
   ├─ private import PysosSoS::*   the same launch vocabulary for host processes
@@ -171,11 +173,16 @@ Entity-plane instance command (one line per application in the SysML):
 ```
 
 `run_instance_process.py` derives its 1-based index (ports, defaults) from
-`PYSOS_TELEMETRY_PORT`, copies the pre-exported
-`build/ssp/variants/<Variant>.ssp` byte-for-byte, writes only the ssp4sim
-config, then `exec`s ssp4sim, so the supervised process is the simulation
-itself. In variant mode it does not rewrite scenario/identity/transport
-SSV/SSM; that legacy rewrite path remains for the baseline bundle.
+`PYSOS_TELEMETRY_PORT` (or requires `--instance` for unix), copies the
+pre-exported `build/ssp/variants/<Variant>.ssp` byte-for-byte, writes only the
+ssp4sim config, then `exec`s ssp4sim, so the supervised process is the
+simulation itself. With no explicit flags it reads the lowered environment:
+`PYSOS_TRANSPORT` (default `unix`), `PYSOS_TELEMETRY_PATH` (unix bind) and
+`PYSOS_CONTROL_PATH` (unix peer when a control endpoint exists); explicit
+`--transport`/`--bind-address`/`--peer-address` always win. In variant mode it
+does not rewrite scenario/identity SSV or the SSM; only a transport override or
+a unix environment rewrites the archive's `<Variant>Transport.ssv`, and the
+legacy rewrite path remains for the baseline bundle.
 
 System-plane SysML (package `FederationSystem`, entry `part def
 SystemDescription`):
@@ -183,10 +190,12 @@ SystemDescription`):
 - `port def RprBroadcast` / `RprListener` — imported from the entity plane
   (`AircraftFederation::*`); role markers with no attributes.
   The flow contract is derived from its owners: protocol from each source's
-  variant `Transport` set (`udp`), encoding from the imported
+  variant `Transport` set (`unix` by default, `udp` when explicitly selected),
+  encoding from the imported
   `RprEntity::RprContract.version` (`rpr.v2` → `rpr`), rate from
-  `Timing.step_size_s` (0.1 s → 10 Hz), and the listener port from
-  `Orchestrator.rprPort` (5505), so nothing is copied;
+  `Timing.step_size_s` (0.1 s → 10 Hz), and the listener address from
+  `Orchestrator.rprPath` (`@pysos-recorder` in the unix model, or
+  `Orchestrator.rprPort` for an explicit UDP model), so nothing is copied;
 - `part def FrameOrigin` — federation origin (geodetic), axis order, waypoint
   frame, and the scenario point the origin must equal;
 - `part def Timing` — `soft_realtime`, 0.1 s step, 10 Hz sample period, 2.0 s
@@ -204,8 +213,9 @@ SystemDescription`):
   `timeout_s`, `order`, `after_process`). `sos_model.py` resolves inherited
   members through `effective_members` and validates the launch graph: builder
   order 0, orchestrator after the builder, viewer after the recorder, no cycles.
-  The orchestrator binds RPR 5505; the viewer reads the recorder truth file and
-  owns no socket;
+  The orchestrator listens on `@pysos-recorder` (`rprPath`; explicit UDP models
+  use `rprPort` 5505); the viewer reads the recorder truth file and owns no
+  socket;
 - `connection rpr_broadcast_<part> connect <part>.telemetry to
   orchestrator.rpr_in` — one RPR broadcast flow per participant; each lowers to
   an `instance/<part>/telemetry` source, and its protocol, encoding and rate
@@ -261,9 +271,11 @@ Consequences that the model makes explicit:
 `scripts/sos_model.py` fails the model when any of these is untrue:
 
 1. the manifest parses and validates through `pysos_coordinate`, and its
-   `name`, `schema` (1) and `timing` match the model;
-2. every instance has exactly one entity and one telemetry endpoint, a
-   non-empty command, and no control endpoint;
+   `name`, `schema` (2 for the unix system plane, 1 for an explicit UDP model)
+   and `timing` match the model;
+2. every instance has exactly one entity and one telemetry endpoint and a
+   non-empty command; a UDP instance declares no control endpoint, while a
+   unix instance may declare one and must then carry `PYSOS_CONTROL_PATH`;
 3. every application command names its runnable variant with `--variant`, and
    `--realtime` never contradicts `timing.realtime`;
 4. stop time and sample period are integer multiples of the step, and the
@@ -273,13 +285,15 @@ Consequences that the model makes explicit:
    reference origin equals the frame origin, its placement offsets match the
    expected values, and no two entities share a placement;
 6. entity slugs and markings are unique, the variant identity sets equal the
-   manifest entities, `env.PYSOS_TELEMETRY_PORT` equals the manifest telemetry
-   port, `PYSOS_SCENARIO` equals the application `scenario`, and no host
-   process is named like an instance;
-7. no UDP port is declared twice across instances and host ports;
-8. every instance telemetry port feeds the modelled RPR broadcast flow, and the
-   flow contract resolves from its owners (transport, `RprContract.version`,
-   `Timing.step_size_s`, `Orchestrator.rprPort`);
+   manifest entities, a UDP instance's `env.PYSOS_TELEMETRY_PORT` equals its
+   manifest port, a unix instance's `env.PYSOS_TRANSPORT` is `unix` and
+   `PYSOS_TELEMETRY_PATH` equals its manifest path, `PYSOS_SCENARIO` equals the
+   application `scenario`, and no host process is named like an instance;
+7. no address is declared twice across instances and host ports: UDP `host:port`
+   and unix paths are compared as addresses;
+8. every instance telemetry endpoint feeds the modelled RPR broadcast flow, and
+    the flow contract resolves from its owners (transport, `RprContract.version`,
+    `Timing.step_size_s`, `Orchestrator.rprPath` for unix or `rprPort` for UDP);
 9. a supervisor process names the same manifest, viewer/recorder `--scenario`
    matches the frame reference, `--run-dir` matches `artifacts.run_dir`, and the
    viewer replays the recorder truth file (`--source jsonl`, `--path`
@@ -289,7 +303,8 @@ Consequences that the model makes explicit:
 11. the entity plane loads with its `Aircraft`/`PysosSoS`/`PysspCore` include
     roots, the package name matches the federation, every variant composes the
     same `AircraftModel` the system plane imported, its bind/peer addresses
-    match the manifest and the system listener, and its identity and
+    match the entity and manifest endpoints and the system listener by address
+    (UDP `host:port` or bare unix path), and its identity and
     `LaunchSpec` agree with the manifest (mode, readiness, order, after-process,
     `startup_timeout`);
 12. the built baseline `scenario.ssp` matches the imported aircraft: the same
@@ -311,7 +326,7 @@ Consequences that the model makes explicit:
    `PYSOS_AFTER_PROCESS`. `sos_model.py` validates the host launch graph.
    `pysos_coordinate` still spawns
    sequentially with no readiness gate and does not enforce `startup_timeout`.
-   A handshake (port bound or log line) plus a shared start instant would turn
+   A handshake (socket/port bound or log line) plus a shared start instant would turn
    "started" into "started together". Until then, `epoch:
    per_process_monotonic` is the truth and the launch contract is declared, not
    enforced.

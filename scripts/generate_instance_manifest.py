@@ -43,6 +43,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--stop-time", type=float, default=None, help="Stop time recorded in every launch command.")
     parser.add_argument("--realtime", action="store_true", help="Record realtime pacing in every launch command.")
     parser.add_argument("--out", type=Path, default=DEFAULT_MANIFEST, help="Manifest path to write or check.")
+    parser.add_argument(
+        "--transport",
+        choices=("udp", "unix"),
+        default="unix",
+        help="Manifest transport (default: unix, schema 2; '--transport udp' is the schema-1 escape hatch).",
+    )
+    parser.add_argument("--unix-prefix", default="pysos", help="Abstract-socket prefix for a schema-2 unix manifest.")
     parser.add_argument("--check", action="store_true", help="Fail when --out differs from the generated manifest.")
     return parser.parse_args(argv)
 
@@ -57,6 +64,8 @@ def main(argv: list[str] | None = None) -> int:
         stop_time=args.stop_time,
         realtime=args.realtime,
         scenario_path=args.scenario,
+        transport=args.transport,
+        unix_prefix=args.unix_prefix,
     )
     expected = json.dumps(spec.to_json(), indent=2) + "\n"
     if args.check:

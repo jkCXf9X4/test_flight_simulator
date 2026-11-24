@@ -21,16 +21,17 @@
         "PYSOS_AFTER_PROCESS": "supervisor",
         "PYSOS_LAUNCH_MODE": "supervised",
         "PYSOS_LAUNCH_ORDER": "2",
-        "PYSOS_READINESS": "port_bound",
+        "PYSOS_READINESS": "socket_bound",
         "PYSOS_SCENARIO": "high_altitude_intercept",
-        "PYSOS_TELEMETRY_PORT": "5510"
+        "PYSOS_TELEMETRY_PATH": "@pysos-red-interceptor",
+        "PYSOS_TRANSPORT": "unix"
       },
       "name": "red_interceptor",
       "startup_timeout": 30.0,
       "telemetry": [
         {
-          "host": "127.0.0.1",
-          "port": 5510
+          "path": "@pysos-red-interceptor",
+          "transport": "unix"
         }
       ]
     },
@@ -55,16 +56,17 @@
         "PYSOS_AFTER_PROCESS": "supervisor",
         "PYSOS_LAUNCH_MODE": "supervised",
         "PYSOS_LAUNCH_ORDER": "2",
-        "PYSOS_READINESS": "port_bound",
+        "PYSOS_READINESS": "socket_bound",
         "PYSOS_SCENARIO": "deep_strike_penetration",
-        "PYSOS_TELEMETRY_PORT": "5512"
+        "PYSOS_TELEMETRY_PATH": "@pysos-red-striker",
+        "PYSOS_TRANSPORT": "unix"
       },
       "name": "red_striker",
       "startup_timeout": 30.0,
       "telemetry": [
         {
-          "host": "127.0.0.1",
-          "port": 5512
+          "path": "@pysos-red-striker",
+          "transport": "unix"
         }
       ]
     },
@@ -89,16 +91,17 @@
         "PYSOS_AFTER_PROCESS": "supervisor",
         "PYSOS_LAUNCH_MODE": "supervised",
         "PYSOS_LAUNCH_ORDER": "2",
-        "PYSOS_READINESS": "port_bound",
+        "PYSOS_READINESS": "socket_bound",
         "PYSOS_SCENARIO": "cas_multi_store_support",
-        "PYSOS_TELEMETRY_PORT": "5514"
+        "PYSOS_TELEMETRY_PATH": "@pysos-blue-cas",
+        "PYSOS_TRANSPORT": "unix"
       },
       "name": "blue_cas",
       "startup_timeout": 30.0,
       "telemetry": [
         {
-          "host": "127.0.0.1",
-          "port": 5514
+          "path": "@pysos-blue-cas",
+          "transport": "unix"
         }
       ]
     },
@@ -123,21 +126,22 @@
         "PYSOS_AFTER_PROCESS": "supervisor",
         "PYSOS_LAUNCH_MODE": "supervised",
         "PYSOS_LAUNCH_ORDER": "2",
-        "PYSOS_READINESS": "port_bound",
+        "PYSOS_READINESS": "socket_bound",
         "PYSOS_SCENARIO": "test_scenario",
-        "PYSOS_TELEMETRY_PORT": "5516"
+        "PYSOS_TELEMETRY_PATH": "@pysos-blue-baseline",
+        "PYSOS_TRANSPORT": "unix"
       },
       "name": "blue_baseline",
       "startup_timeout": 30.0,
       "telemetry": [
         {
-          "host": "127.0.0.1",
-          "port": 5516
+          "path": "@pysos-blue-baseline",
+          "transport": "unix"
         }
       ]
     }
   ],
   "name": "AircraftFederation",
-  "schema": 1,
+  "schema": 2,
   "timing": "wall_clock"
 }

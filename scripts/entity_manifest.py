@@ -7,7 +7,8 @@ architecture (``Aircraft``) and the shared SoS vocabulary (``PysosSoS``).
 wrapper supplies them, exactly as ``scripts/sos_model.py`` does for the system
 plane, and keeps the lowering command one line.
 
-The lowered artifact is the schema-1 manifest owned by ``pysos_coordinate``.
+The lowered artifact is the ``pysos_coordinate`` manifest: schema 2 when the
+transport set selects unix (the project default), schema 1 for explicit UDP.
 The aircraft composition itself is not lowered: it is a model-time assertion
 that every entity is an ``AircraftModel``, and ``scripts/sos_model.py`` checks
 that assertion against the system plane.
@@ -49,7 +50,10 @@ def load_entity_model(path: Path | str = DEFAULT_MODEL) -> FederationDef:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="entity-manifest",
-        description="Lower the SoS entity plane, resolving its SysML include roots.",
+        description=(
+            "Lower the SoS entity plane, resolving its SysML include roots "
+            "(unix schema 2 by default, UDP schema 1 when selected)."
+        ),
     )
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
     parser.add_argument(

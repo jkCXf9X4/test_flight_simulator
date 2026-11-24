@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "name": "high_altitude_intercept",
   "timing": "wall_clock",
   "instances": [
@@ -38,7 +38,8 @@
       "cwd": ".",
       "env": {
         "PYSOS_SCENARIO": "test_scenario",
-        "PYSOS_TELEMETRY_PORT": "5510"
+        "PYSOS_TRANSPORT": "unix",
+        "PYSOS_TELEMETRY_PATH": "@pysos-instance-1"
       },
       "entities": [
         {
@@ -50,8 +51,8 @@
       ],
       "telemetry": [
         {
-          "host": "127.0.0.1",
-          "port": 5510
+          "transport": "unix",
+          "path": "@pysos-instance-1"
         }
       ],
       "control": [],
@@ -92,7 +93,8 @@
       "cwd": ".",
       "env": {
         "PYSOS_SCENARIO": "test_scenario",
-        "PYSOS_TELEMETRY_PORT": "5512"
+        "PYSOS_TRANSPORT": "unix",
+        "PYSOS_TELEMETRY_PATH": "@pysos-instance-2"
       },
       "entities": [
         {
@@ -104,8 +106,8 @@
       ],
       "telemetry": [
         {
-          "host": "127.0.0.1",
-          "port": 5512
+          "transport": "unix",
+          "path": "@pysos-instance-2"
         }
       ],
       "control": [],

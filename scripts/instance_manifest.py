@@ -36,6 +36,7 @@ DEFAULT_PYTHON = "python3"
 LAUNCH_SCRIPT = "scripts/run_instance_process.py"
 ENTITY_SITE = "1"
 ENTITY_APPLICATION = "1"
+TRANSPORT_CHOICES = ("udp", "unix")
 
 
 def _display_path(path: Path | str) -> str:
@@ -79,6 +80,29 @@ def _scenario_origin(scenario_path: Path | str) -> tuple[float, float, float]:
     )
 
 
+def _unix_path(
+    index: int,
+    unix_prefix: str,
+    unix_dir: Path | str | None,
+) -> str:
+    """One instance's unix endpoint: an abstract name or a socket-dir path.
+
+    A socket directory wins over the abstract prefix. The prefix defaults to
+    ``pysos`` so every generated manifest has deterministic ``@pysos-instance-N``
+    names unless the caller opts into a run-scoped prefix.
+    """
+
+    if unix_dir is not None:
+        directory = Path(unix_dir)
+        if not directory.is_absolute():
+            directory = REPO_ROOT / directory
+        return str(directory.resolve() / f"instance-{index}.sock")
+    prefix = unix_prefix.removeprefix("@")
+    if not prefix:
+        raise ValueError("unix_prefix must not be empty")
+    return f"@{prefix}-instance-{index}"
+
+
 def build_spec(
     *,
     instances: int = 2,
@@ -89,11 +113,28 @@ def build_spec(
     realtime: bool = False,
     scenario_path: Path | str = SCENARIO_PATH,
     name: str | None = None,
+    transport: str = "unix",
+    unix_prefix: str = "pysos",
+    unix_dir: Path | str | None = None,
 ) -> FederationSpec:
-    """Translate project settings into a validated ``FederationSpec``."""
+    """Translate project settings into a validated ``FederationSpec``.
+
+    ``transport="unix"`` is the default and emits schema 2: each instance offers
+    ``Endpoint.unix(...)`` (the deterministic abstract ``@<unix_prefix>-instance-N``
+    or an absolute socket path under *unix_dir*), declares no ports, and carries
+    ``PYSOS_TRANSPORT``/``PYSOS_TELEMETRY_PATH`` in its environment.
+    ``transport="udp"`` is the explicit escape hatch and reproduces the schema-1
+    checked-in manifest byte-for-byte.
+    """
 
     if instances < 1:
         raise ValueError(f"instances must be >= 1, got {instances}")
+    if transport not in TRANSPORT_CHOICES:
+        raise ValueError(
+            f"transport must be one of {', '.join(TRANSPORT_CHOICES)}, got {transport!r}"
+        )
+    if transport == "udp" and unix_dir is not None:
+        raise ValueError("unix_prefix/unix_dir require transport='unix'")
     federation_name = name or _scenario_name(scenario_path)
     scenario_key = _scenario_key(scenario_path)
     latitude_deg, longitude_deg, altitude_m = _scenario_origin(scenario_path)
@@ -135,15 +176,27 @@ def build_spec(
             command += ["--stop-time", str(float(stop_time))]
         if realtime:
             command.append("--realtime")
+        if transport == "unix":
+            path = _unix_path(index, unix_prefix, unix_dir)
+            telemetry = [Endpoint.unix(path)]
+            env = {
+                "PYSOS_SCENARIO": scenario_key,
+                "PYSOS_TRANSPORT": "unix",
+                "PYSOS_TELEMETRY_PATH": path,
+            }
+        else:
+            port = int(defaults["telemetry_port"])
+            telemetry = [Endpoint.udp(port)]
+            env = {
+                "PYSOS_SCENARIO": scenario_key,
+                "PYSOS_TELEMETRY_PORT": str(port),
+            }
         specs.append(
             InstanceSpec(
                 name=f"instance-{index}",
                 command=command,
                 cwd=Path("."),
-                env={
-                    "PYSOS_SCENARIO": scenario_key,
-                    "PYSOS_TELEMETRY_PORT": str(int(defaults["telemetry_port"])),
-                },
+                env=env,
                 entities=[
                     EntityRef(
                         site=ENTITY_SITE,
@@ -152,11 +205,12 @@ def build_spec(
                         marking=marking,
                     )
                 ],
-                telemetry=[Endpoint.udp(int(defaults["telemetry_port"]))],
+                telemetry=telemetry,
                 control=[],
             )
         )
-    return FederationSpec(name=federation_name, instances=specs).validate()
+    schema = 2 if transport == "unix" else 1
+    return FederationSpec(name=federation_name, instances=specs, schema=schema).validate()
 
 
 def load_spec(path: Path | str = DEFAULT_MANIFEST) -> FederationSpec:

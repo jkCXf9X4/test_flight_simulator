@@ -4,10 +4,12 @@
 #
 # The federation runs on the host and records an RPR truth stream through
 # scripts/run_e2e_rpr.py. There is no JSON telemetry port: each aircraft's
-# rpr_entity FMU broadcasts directly to the recorder on 127.0.0.1:5505, and the
-# viewer replays the recorder's truth.jsonl. The flight_viewer/Rerun frontend
-# runs either on the host with the repo venv (default) or inside the Rerun
-# Podman image when RERUN_CONTAINER=1.
+# rpr_entity FMU broadcasts directly to the recorder over Unix datagram sockets
+# by default, and the viewer replays the recorder's truth.jsonl. Set
+# TRANSPORT=udp for the legacy RPR broadcast on 127.0.0.1:5505, and UNIX_DIR to
+# use pathname sockets instead of abstract names. The flight_viewer/Rerun
+# frontend runs either on the host with the repo venv (default) or inside the
+# Rerun Podman image when RERUN_CONTAINER=1.
 #
 # RERUN_WEB=1 swaps the native viewer window for the Rerun web viewer, fed
 # over gRPC and opened in a dedicated Chrome instance that enables the
@@ -28,6 +30,8 @@ MANIFEST="${MANIFEST:-}"
 RUN_DIR="${RUN_DIR:-build/results/e2e}"
 TRUTH_PATH="${TRUTH_PATH:-$RUN_DIR/truth.jsonl}"
 STOP_TIME="${STOP_TIME:-30.0}"
+TRANSPORT="${TRANSPORT:-unix}"
+UNIX_DIR="${UNIX_DIR:-}"
 XAUTHORITY_PATH="${XAUTHORITY:-$HOME/.Xauthority}"
 RERUN_WEB="${RERUN_WEB:-0}"
 RERUN_WEB_PORT="${RERUN_WEB_PORT:-9090}"
@@ -155,7 +159,11 @@ SIM_ARGS=(
   --stop-time "$STOP_TIME"
   --run-dir "$RUN_DIR"
   --scenario "$SCENARIO_PATH"
+  --transport "$TRANSPORT"
 )
+if [[ -n "$UNIX_DIR" ]]; then
+  SIM_ARGS+=(--unix-dir "$UNIX_DIR")
+fi
 if [[ -n "$MANIFEST" ]]; then
   SIM_ARGS+=(--manifest "$MANIFEST")
 fi

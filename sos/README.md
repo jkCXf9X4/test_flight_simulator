@@ -8,16 +8,16 @@ the real architecture (`private import Aircraft::*;`) so the aircraft is not
 restated; twelve `ParameterSet` defs (Scenario/Identity/Transport per variant)
 bound on each variant root; and `AircraftApplication` plus four app defs and
 participant defs, joined by `part def Federation`. Every application declares a
-shared `part launch : LaunchSpec` (`supervised`, `port_bound`, 30 s, order 2,
+shared `part launch : LaunchSpec` (`supervised`, `socket_bound`, 30 s, order 2,
 after the `supervisor` role) from the `PysosSoS` vocabulary shipped by
 `pysos_sysml`.
 
-| Variant | Callsign | Scenario | RPR bind port |
+| Variant | Callsign | Scenario | RPR bind socket |
 | --- | --- | --- | --- |
-| `RedInterceptor` | `RED-1` | `high_altitude_intercept` | 5510 |
-| `RedStriker` | `RED-2` | `deep_strike_penetration` | 5512 |
-| `BlueCas` | `BLUE-1` | `cas_multi_store_support` | 5514 |
-| `BlueBaseline` | `BLUE-2` | `test_scenario` | 5516 |
+| `RedInterceptor` | `RED-1` | `high_altitude_intercept` | `@pysos-red-interceptor` |
+| `RedStriker` | `RED-2` | `deep_strike_penetration` | `@pysos-red-striker` |
+| `BlueCas` | `BLUE-1` | `cas_multi_store_support` | `@pysos-blue-cas` |
+| `BlueBaseline` | `BLUE-2` | `test_scenario` | `@pysos-blue-baseline` |
 
 All four run site 1 / application 1, entities 1–4, from the repository root
 with `python scripts/run_instance_process.py --realtime --variant <Variant>`.
@@ -28,16 +28,17 @@ parameter sets, the `DefaultExperiment` and the FMU sources, and the instance
 bundle copies it byte-for-byte.
 
 Every entity broadcasts its own RPR entity state one-way to the recorder on
-`127.0.0.1:5505` and never addresses another entity; there are no
-entity-to-entity links in the setup. The aircraft's `rpr_entity` binds the
-variant telemetry endpoint (5510/5512/5514/5516) and peers at 5505.
+`@pysos-recorder` and never addresses another entity; there are no
+entity-to-entity links in the setup. The aircraft's `rpr_entity` binds its
+variant telemetry socket (`@pysos-red-interceptor` etc.) and peers at
+`@pysos-recorder`. An explicit UDP model keeps the `127.0.0.1:5505` form.
 
 ## System plane
 
 `federation_system.sysml` (package `FederationSystem`) models everything that is
 not an aircraft participant: the shared frame and origin, the timing contract,
 the host-side participants (`orchestrator` = supervisor + recorder listening on
-RPR 5505, `viewer` replaying the recorder truth stream, `builder`), the flows
+`@pysos-recorder`, `viewer` replaying the recorder truth stream, `builder`), the flows
 between them and the run artifacts. It imports both planes instead of repeating
 them: `private import Aircraft::*;` brings the real aircraft composition
 (`3rd_party/airplane/architecture/aircraft.sysml`), and
@@ -46,7 +47,7 @@ defs and the order of `AircraftFederation::Federation`. The system plane
 declares one part per participant (`part red_interceptor :
 RedInterceptorParticipant;`, then `red_striker`, `blue_cas`, `blue_baseline`)
 in that order, plus one `rpr_broadcast_<part>` connection each. It is SysML v2
-lowered through `pycps_sysml2` by `scripts/sos_model.py`, which fails if the
+lowered through `pycps_sysml` by `scripts/sos_model.py`, which fails if the
 participants, their types or their order drift from the entity plane or the
 manifest.
 

@@ -15,7 +15,7 @@ accepts the whole federation today:
 * the **system plane** is ``sos/federation_system.sysml``: the shared frame, the
   federation timing contract, the aircraft participants, the host-side
   participants (orchestrator/recorder, viewer, builder), the RPR broadcast flows
-  and the run artifacts. This module lowers it from the ``pycps_sysml2`` IR,
+  and the run artifacts. This module lowers it from the ``pycps_sysml`` IR,
   which already carries port definitions, port usages, connections and typed
   attribute values. The system plane imports the aircraft architecture (package
   ``Aircraft``), the entity plane (package ``AircraftFederation``) and
@@ -55,7 +55,7 @@ from typing import Any
 from xml.etree import ElementTree
 
 import entity_manifest
-import pycps_sysml2
+import pycps_sysml
 import pysos_sysml
 import pyssp_sysml_definitions
 
@@ -72,11 +72,11 @@ TIMING_POLICIES = frozenset({"wall_clock"})
 TIMING_CLASSES = frozenset({"soft_realtime", "hard_realtime", "batch"})
 FRAME_MODES = frozenset({"federation"})
 WAYPOINT_FRAMES = frozenset({"federation", "local"})
-PROTOCOLS = frozenset({"udp"})
+PROTOCOLS = frozenset({"udp", "unix"})
 ENCODINGS = frozenset({"json-udp", "dis", "rpr", "none"})
 ROLES = frozenset({"supervisor", "recorder", "visualizer", "operator", "builder"})
 LAUNCH_MODES = frozenset({"supervised", "operator", "manual"})
-LAUNCH_READINESS = frozenset({"none", "port_bound", "log_line"})
+LAUNCH_READINESS = frozenset({"none", "port_bound", "socket_bound", "log_line"})
 LAUNCH_ATTRIBUTES = {
     "mode": "String",
     "readiness": "String",
@@ -158,7 +158,7 @@ class Process:
     launch: LaunchSpec
     command: tuple[str, ...]
     cwd: str
-    ports: dict[str, int | None]
+    ports: dict[str, int | str | None]
     artifact_keys: tuple[str, ...] = ()
 
 
@@ -473,7 +473,7 @@ def _launch_spec(architecture: Any, definition: Any, where: str) -> LaunchSpec:
     normalised here. ``effective_members`` resolves a launch inherited from
     ``PysosSoS::Application`` when the concrete process does not redeclare it.
     """
-    members = pycps_sysml2.effective_members(architecture, definition)
+    members = pycps_sysml.effective_members(architecture, definition)
     usage = members.parts.get("launch")
     if usage is None:
         raise ModelError(f"{where}: missing nested 'part launch : LaunchSpec'")
@@ -534,7 +534,7 @@ def _launch_spec(architecture: Any, definition: Any, where: str) -> LaunchSpec:
 
 def _parse_process(architecture: Any, name: str, usage: Any) -> Process:
     definition = _part_definition(architecture, usage.type_name)
-    members = pycps_sysml2.effective_members(architecture, definition)
+    members = pycps_sysml.effective_members(architecture, definition)
     attributes = {
         attribute_name: (attribute.type_name, attribute.value)
         for attribute_name, attribute in members.attributes.items()
@@ -548,22 +548,33 @@ def _parse_process(architecture: Any, name: str, usage: Any) -> Process:
     command = tuple(shlex.split(_typed(attributes, "command", "String", where)))
     if not command:
         raise ModelError(f"{where}.command: empty command line")
-    ports: dict[str, int | None] = {}
+    ports: dict[str, int | str | None] = {}
     for port_name, port in members.ports.items():
         port_definition = _port_definition(architecture, port.type_name)
         if _attributes(port_definition):
             ports[port_name] = _port_number(architecture, port.type_name, port_name, where)
         elif port_name == "rpr_in":
-            # The marker owns no endpoint; the host application does.
-            if "rprPort" not in attributes:
+            # The marker owns no endpoint; the host application does. A UDP
+            # listener is an integer port, a unix listener a bare socket path.
+            if "rprPort" in attributes:
+                number = int(_typed(attributes, "rprPort", "Integer", where))
+                if not 1 <= number <= 65535:
+                    raise ModelError(f"{where}.rprPort: port {number} out of range")
+                ports[port_name] = number
+            elif "rprPath" in attributes:
+                path = str(_typed(attributes, "rprPath", "String", where))
+                if _unix_path(path) is None:
+                    raise ModelError(
+                        f"{where}.rprPath: expected an absolute socket path or "
+                        f"'@abstract-name', found {path!r}"
+                    )
+                ports[port_name] = path
+            else:
                 raise ModelError(
                     f"{where}.{port_name}: port def {port.type_name!r} is a marker; "
-                    f"declare 'attribute rprPort : Integer' on the process"
+                    f"declare 'attribute rprPort : Integer' or "
+                    f"'attribute rprPath : String' on the process"
                 )
-            number = int(_typed(attributes, "rprPort", "Integer", where))
-            if not 1 <= number <= 65535:
-                raise ModelError(f"{where}.rprPort: port {number} out of range")
-            ports[port_name] = number
         else:
             ports[port_name] = None
     return Process(
@@ -629,7 +640,7 @@ def _parse_aircraft(architecture: Any, participants: Sequence[tuple[str, Any]]) 
     """Lower the imported ``AircraftModel`` and prove every participant composes it."""
 
     model = _part_definition(architecture, "AircraftModel")
-    members = pycps_sysml2.effective_members(architecture, model)
+    members = pycps_sysml.effective_members(architecture, model)
     parts = dict(members.parts or {})
 
     components: list[Component] = []
@@ -675,7 +686,7 @@ def _parse_aircraft(architecture: Any, participants: Sequence[tuple[str, Any]]) 
     target_key = architecture.stored_key(model)
     for name, participant in participants:
         aircraft_usage = (
-            pycps_sysml2.effective_members(architecture, participant).parts or {}
+            pycps_sysml.effective_members(architecture, participant).parts or {}
         ).get("aircraft")
         if aircraft_usage is None:
             raise ModelError(f"participant {name}: expected a nested 'aircraft' part")
@@ -727,7 +738,7 @@ def _parse_flows(
                 f"participant {source_part!r}"
             )
         source_type = _part_definition(architecture, parts[source_part].type_name)
-        source_ports = pycps_sysml2.effective_members(architecture, source_type).ports or {}
+        source_ports = pycps_sysml.effective_members(architecture, source_type).ports or {}
         if connection.source_port not in source_ports:
             raise ModelError(
                 f"connection {connection.name!r}: participant {source_part!r} declares no "
@@ -735,7 +746,7 @@ def _parse_flows(
             )
         source_port = source_ports[connection.source_port]
         target_type = _part_definition(architecture, parts[target_part].type_name)
-        target_ports = pycps_sysml2.effective_members(architecture, target_type).ports or {}
+        target_ports = pycps_sysml.effective_members(architecture, target_type).ports or {}
         if connection.destination_port not in target_ports:
             raise ModelError(
                 f"connection {connection.name!r}: {target_part!r} ({target_type.name}) "
@@ -768,7 +779,7 @@ def _parse_flows(
 def parse_architecture(
     architecture: Any, source: Path, entity_federation: Any
 ) -> SystemModel:
-    """Lower a ``pycps_sysml2`` architecture to the system-plane model."""
+    """Lower a ``pycps_sysml`` architecture to the system-plane model."""
 
     system = _part_definition(architecture, SYSTEM_DEF)
     attributes = _attributes(system)
@@ -785,7 +796,7 @@ def parse_architecture(
     # The entity plane's Federation is authoritative for participant identity
     # and order. One system-plane part per participant, typed by the same def.
     entity_parts = list(
-        (pycps_sysml2.effective_members(architecture, entity_federation).parts or {}).items()
+        (pycps_sysml.effective_members(architecture, entity_federation).parts or {}).items()
     )
     if not entity_parts:
         raise ModelError(f"part def {entity_federation.name}: declares no participants")
@@ -832,7 +843,7 @@ def parse_architecture(
                 f"{where}.{name}: typed {architecture.stored_key(actual)!r} but the entity "
                 f"plane's {entity_federation.name} declares {entity_types[name]!r}"
             )
-        members = pycps_sysml2.effective_members(architecture, actual)
+        members = pycps_sysml.effective_members(architecture, actual)
         telemetry = (members.ports or {}).get("telemetry")
         if telemetry is None:
             raise ModelError(f"part def {actual.name}: missing port 'telemetry'")
@@ -875,7 +886,7 @@ def parse_architecture(
 
 def _load_architecture(path: Path) -> Any:
     try:
-        return pycps_sysml2.load(path)
+        return pycps_sysml.load(path)
     except Exception as exc:  # sysmlpy raises its own syntax error type
         raise ModelError(f"{path}: cannot parse SysML v2 model: {exc}") from exc
 
@@ -910,7 +921,7 @@ def load_model(path: Path | str = DEFAULT_MODEL) -> SystemModel:
         pysos_sysml.sos_definitions(),
         pyssp_sysml_definitions.core_definitions(),
     ]
-    # The aircraft architecture imports the RPR entity dialect. pycps_sysml2
+    # The aircraft architecture imports the RPR entity dialect. pycps_sysml
     # resolves imports across the roots it is given, so supply the bundled
     # definition as well instead of restating it in the system plane.
     if (
@@ -953,7 +964,7 @@ class Resolved:
     label: str
     component: str
     scope: str
-    port: int | None
+    port: int | str | None
 
 
 def _as_int_port(value: Any) -> int | None:
@@ -964,16 +975,65 @@ def _as_int_port(value: Any) -> int | None:
     return port if 1 <= port <= 65535 else None
 
 
-def _instance_ports(instance: Mapping[str, Any]) -> dict[str, int]:
-    ports: dict[str, int] = {}
+def _instance_ports(instance: Mapping[str, Any]) -> dict[str, int | str]:
+    """Declared endpoint addresses: UDP ports as ints, unix paths as strings."""
+
+    ports: dict[str, int | str] = {}
     for name in ("telemetry", "control"):
         endpoints = instance.get(name) or []
         if len(endpoints) != 1 or not isinstance(endpoints[0], Mapping):
             continue
-        port = _as_int_port(endpoints[0].get("port"))
+        endpoint = endpoints[0]
+        if endpoint.get("transport") == "unix":
+            path = _unix_path(endpoint.get("path"))
+            if path is not None:
+                ports[name] = path
+            continue
+        port = _as_int_port(endpoint.get("port"))
         if port is not None:
             ports[name] = port
     return ports
+
+
+def _unix_path(value: Any) -> str | None:
+    """A bare unix endpoint: an absolute socket path or ``@abstract-name``."""
+
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if text.startswith("@"):
+        return text if len(text) > 1 else None
+    return text if text.startswith("/") else None
+
+
+def _manifest_endpoint_address(endpoint: Any) -> str | None:
+    """``host:port`` or a unix path, matching ``Endpoint.address``."""
+
+    if not isinstance(endpoint, Mapping):
+        return None
+    if endpoint.get("transport") == "unix":
+        return _unix_path(endpoint.get("path"))
+    host = str(endpoint.get("host") or "")
+    port = _as_int_port(endpoint.get("port"))
+    if not host or port is None:
+        return None
+    return f"{host}:{port}"
+
+
+def _entity_endpoint_address(endpoint: Any) -> str | None:
+    """An entity-plane telemetry endpoint's address, UDP or unix."""
+
+    if endpoint is None:
+        return None
+    if getattr(endpoint, "transport", "udp") == "unix" or getattr(
+        endpoint, "path", None
+    ) is not None:
+        return _unix_path(getattr(endpoint, "path", None))
+    host = getattr(endpoint, "host", None)
+    port = getattr(endpoint, "port", None)
+    if isinstance(port, int) and host:
+        return f"{host}:{port}"
+    return None
 
 
 def _instances(manifest: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
@@ -1095,7 +1155,17 @@ def _check_manifest(manifest: Mapping[str, Any], model: SystemModel) -> list[str
         problems.append(
             f"manifest.timing {manifest.get('timing')!r} != model.timing.policy {model.timing.policy!r}"
         )
-    if manifest.get("schema") != SCHEMA_VERSION:
+    listener = _system_listener_address(model)
+    if listener is not None:
+        # The system plane is the authority for the transport: a unix listener
+        # is schema 2, an integer listener is the explicit UDP schema 1.
+        expected_schema = 2 if isinstance(listener, str) else 1
+        if manifest.get("schema") != expected_schema:
+            problems.append(
+                f"manifest.schema {manifest.get('schema')!r} != {expected_schema} for "
+                f"system listener {listener!r}"
+            )
+    elif manifest.get("schema") not in (1, 2):
         problems.append(f"manifest.schema {manifest.get('schema')!r} != {SCHEMA_VERSION}")
     instances = manifest.get("instances") or []
     expected_order = [instance.name for instance in model.instances]
@@ -1394,18 +1464,60 @@ def _check_identity(
             elif not variant:
                 problems.append(f"{name}: application --variant is empty")
         env = instance.get("env") or {}
-        if "PYSOS_TELEMETRY_PORT" not in env:
-            problems.append(f"{name}: env.PYSOS_TELEMETRY_PORT is missing")
         telemetry = instance.get("telemetry") or []
-        if (
-            telemetry
+        unix_endpoint = (
+            len(telemetry) == 1
             and isinstance(telemetry[0], Mapping)
-            and str(env.get("PYSOS_TELEMETRY_PORT")) != str(telemetry[0].get("port"))
-        ):
-            problems.append(
-                f"{name}: env.PYSOS_TELEMETRY_PORT {env.get('PYSOS_TELEMETRY_PORT')!r} != "
-                f"manifest telemetry port {telemetry[0].get('port')!r}"
+            and telemetry[0].get("transport") == "unix"
+        )
+        if unix_endpoint:
+            if env.get("PYSOS_TRANSPORT") != "unix":
+                problems.append(
+                    f"{name}: env.PYSOS_TRANSPORT {env.get('PYSOS_TRANSPORT')!r} != "
+                    f"'unix' for a unix telemetry endpoint"
+                )
+            expected_path = str(telemetry[0].get("path") or "")
+            if "PYSOS_TELEMETRY_PATH" not in env:
+                problems.append(f"{name}: env.PYSOS_TELEMETRY_PATH is missing")
+            elif str(env.get("PYSOS_TELEMETRY_PATH")) != expected_path:
+                problems.append(
+                    f"{name}: env.PYSOS_TELEMETRY_PATH "
+                    f"{env.get('PYSOS_TELEMETRY_PATH')!r} != manifest telemetry path "
+                    f"{expected_path!r}"
+                )
+            control = instance.get("control") or []
+            control_unix = (
+                len(control) == 1
+                and isinstance(control[0], Mapping)
+                and control[0].get("transport") == "unix"
             )
+            if control_unix:
+                expected_control = str(control[0].get("path") or "")
+                if "PYSOS_CONTROL_PATH" not in env:
+                    problems.append(f"{name}: env.PYSOS_CONTROL_PATH is missing")
+                elif str(env.get("PYSOS_CONTROL_PATH")) != expected_control:
+                    problems.append(
+                        f"{name}: env.PYSOS_CONTROL_PATH "
+                        f"{env.get('PYSOS_CONTROL_PATH')!r} != manifest control path "
+                        f"{expected_control!r}"
+                    )
+            elif "PYSOS_CONTROL_PATH" in env:
+                problems.append(
+                    f"{name}: env.PYSOS_CONTROL_PATH is set but the manifest has no "
+                    f"unix control endpoint"
+                )
+        else:
+            if "PYSOS_TELEMETRY_PORT" not in env:
+                problems.append(f"{name}: env.PYSOS_TELEMETRY_PORT is missing")
+            if (
+                telemetry
+                and isinstance(telemetry[0], Mapping)
+                and str(env.get("PYSOS_TELEMETRY_PORT")) != str(telemetry[0].get("port"))
+            ):
+                problems.append(
+                    f"{name}: env.PYSOS_TELEMETRY_PORT {env.get('PYSOS_TELEMETRY_PORT')!r} != "
+                    f"manifest telemetry port {telemetry[0].get('port')!r}"
+                )
         if "PYSOS_SCENARIO" not in env:
             problems.append(
                 f"{name}: env.PYSOS_SCENARIO is missing; the scenario name is "
@@ -1426,7 +1538,7 @@ def _check_identity(
     return problems
 
 
-def _system_listener_port(model: SystemModel) -> int | None:
+def _system_listener_address(model: SystemModel) -> int | str | None:
     for process in model.processes:
         if "rpr_in" in process.ports:
             return process.ports["rpr_in"]
@@ -1472,7 +1584,7 @@ def _check_entity_model(
         )
     for name in sorted(set(occurrences) - set(instances)):
         problems.append(f"entity {name}: declared but absent from the manifest")
-    listener = _system_listener_port(model)
+    listener = _system_listener_address(model)
     for name, instance in instances.items():
         if name not in occurrences:
             problems.append(f"{name}: manifest instance has no entity-plane declaration")
@@ -1510,18 +1622,45 @@ def _check_entity_model(
             )
         if entity_endpoint is None:
             problems.append(f"{name}: entity plane declares no telemetry endpoint")
-        if entity_instance.control_ports:
+        transport = entity_instance.transport_values
+        transport_name = transport.get("transport")
+        unix = transport_name == "unix"
+        if transport_name not in ("udp", "unix"):
+            problems.append(
+                f"{name}: transport {transport_name!r} is not 'udp' or 'unix'"
+            )
+        if entity_instance.control_ports and not unix:
             problems.append(
                 f"{name}: entity plane declares {len(entity_instance.control_ports)} "
                 f"control endpoint(s); expected none"
             )
-        transport = entity_instance.transport_values
-        if transport.get("transport") != "udp":
-            problems.append(
-                f"{name}: transport {transport.get('transport')!r} != 'udp'"
-            )
+        entity_address = _entity_endpoint_address(entity_endpoint)
+        telemetry = instance.get("telemetry") or []
+        manifest_address = (
+            _manifest_endpoint_address(telemetry[0])
+            if len(telemetry) == 1
+            else None
+        )
         if "bind_address" not in transport:
             problems.append(f"{name}: transport.bind_address is missing; the RPR bind is not wired")
+        elif unix:
+            bind_path = _unix_path(transport["bind_address"])
+            if bind_path is None:
+                problems.append(
+                    f"{name}: transport.bind_address {transport['bind_address']!r} is not "
+                    f"an absolute socket path or '@abstract-name'"
+                )
+            else:
+                if entity_address is not None and entity_address != bind_path:
+                    problems.append(
+                        f"{name}: transport.bind_address {bind_path} != "
+                        f"entity telemetry {entity_address}"
+                    )
+                if manifest_address is not None and manifest_address != bind_path:
+                    problems.append(
+                        f"{name}: transport.bind_address {bind_path} != "
+                        f"manifest telemetry {manifest_address}"
+                    )
         else:
             bind = _host_port(transport["bind_address"])
             if bind is None:
@@ -1538,7 +1677,6 @@ def _check_entity_model(
                         f"{name}: transport.bind_address {bind[0]}:{bind[1]} != "
                         f"entity telemetry {entity_endpoint.host}:{entity_endpoint.port}"
                     )
-                telemetry = instance.get("telemetry") or []
                 if len(telemetry) == 1 and isinstance(telemetry[0], Mapping):
                     endpoint_host = str(telemetry[0].get("host") or "")
                     endpoint_port = _as_int_port(telemetry[0].get("port"))
@@ -1551,6 +1689,41 @@ def _check_entity_model(
             problems.append(
                 f"{name}: transport.peer_address is missing; the listener is not wired"
             )
+        elif unix:
+            peer_path = _unix_path(transport["peer_address"])
+            if peer_path is None:
+                problems.append(
+                    f"{name}: transport.peer_address {transport['peer_address']!r} is not "
+                    f"an absolute socket path or '@abstract-name'"
+                )
+            else:
+                if listener is None:
+                    problems.append(
+                        f"{name}: transport.peer_address {peer_path} names no system "
+                        f"listener address (rpr_in)"
+                    )
+                elif str(listener) != peer_path:
+                    problems.append(
+                        f"{name}: transport.peer_address {peer_path} != system listener "
+                        f"address {listener}"
+                    )
+                if entity_instance.control_ports and index < len(entity_instance.control_ports):
+                    control_address = _entity_endpoint_address(
+                        entity_instance.control_ports[index]
+                    )
+                    if control_address is not None and control_address != peer_path:
+                        problems.append(
+                            f"{name}: transport.peer_address {peer_path} != "
+                            f"entity control {control_address}"
+                        )
+                control = instance.get("control") or []
+                if len(control) == 1:
+                    control_address = _manifest_endpoint_address(control[0])
+                    if control_address is not None and control_address != peer_path:
+                        problems.append(
+                            f"{name}: transport.peer_address {peer_path} != "
+                            f"manifest control {control_address}"
+                        )
         else:
             peer = _host_port(transport["peer_address"])
             if peer is None:
@@ -1624,21 +1797,23 @@ def _check_entity_model(
 
 def _check_ports(manifest: Mapping[str, Any], model: SystemModel) -> list[str]:
     problems: list[str] = []
-    owners: dict[int, str] = {}
+    owners: dict[int | str, str] = {}
+
+    def claim(address: int | str, label: str) -> None:
+        if address in owners:
+            kind = "address" if isinstance(address, str) else "port"
+            rendered = repr(address) if isinstance(address, str) else address
+            problems.append(f"{kind} {rendered} declared by both {owners[address]} and {label}")
+        owners[address] = label
+
     for name, instance in _instances(manifest).items():
-        for endpoint_name, port in _instance_ports(instance).items():
-            label = f"{name}.{endpoint_name}"
-            if port in owners:
-                problems.append(f"port {port} declared by both {owners[port]} and {label}")
-            owners[port] = label
+        for endpoint_name, address in _instance_ports(instance).items():
+            claim(address, f"{name}.{endpoint_name}")
     for process in model.processes:
-        for port_name, port in process.ports.items():
-            if port is None:
+        for port_name, address in process.ports.items():
+            if address is None:
                 continue
-            label = f"{process.name}.{port_name}"
-            if port in owners:
-                problems.append(f"port {port} declared by both {owners[port]} and {label}")
-            owners[port] = label
+            claim(address, f"{process.name}.{port_name}")
     return problems
 
 
@@ -1689,31 +1864,50 @@ def _flow_contract(
             protocols[source.component] = str(transport["transport"])
 
         bind = transport.get("bind_address")
+        source_unix = transport.get("transport") == "unix"
         if bind is None:
             problems.append(
                 f"flows.{flow.name}.{source.component}: transport.bind_address is missing"
             )
         else:
-            endpoint = _host_port(bind)
             telemetry = instances.get(source.component, {}).get("telemetry") or []
-            manifest_endpoint = None
-            if len(telemetry) == 1 and isinstance(telemetry[0], Mapping):
-                manifest_endpoint = (
-                    str(telemetry[0].get("host") or ""),
-                    _as_int_port(telemetry[0].get("port")),
-                )
-            if endpoint is None:
-                problems.append(
-                    f"flows.{flow.name}.{source.component}: transport.bind_address "
-                    f"{bind!r} is not 'host:port'"
-                )
-            elif endpoint != manifest_endpoint:
-                problems.append(
-                    f"flows.{flow.name}.{source.component}: transport.bind_address "
-                    f"{endpoint[0]}:{endpoint[1]} != manifest telemetry "
-                    f"{manifest_endpoint[0] if manifest_endpoint else None}:"
-                    f"{manifest_endpoint[1] if manifest_endpoint else None}"
-                )
+            manifest_address = (
+                _manifest_endpoint_address(telemetry[0])
+                if len(telemetry) == 1
+                else None
+            )
+            if source_unix:
+                endpoint = _unix_path(bind)
+                if endpoint is None:
+                    problems.append(
+                        f"flows.{flow.name}.{source.component}: transport.bind_address "
+                        f"{bind!r} is not an absolute socket path or '@abstract-name'"
+                    )
+                elif endpoint != manifest_address:
+                    problems.append(
+                        f"flows.{flow.name}.{source.component}: transport.bind_address "
+                        f"{endpoint} != manifest telemetry {manifest_address}"
+                    )
+            else:
+                endpoint = _host_port(bind)
+                manifest_endpoint = None
+                if len(telemetry) == 1 and isinstance(telemetry[0], Mapping):
+                    manifest_endpoint = (
+                        str(telemetry[0].get("host") or ""),
+                        _as_int_port(telemetry[0].get("port")),
+                    )
+                if endpoint is None:
+                    problems.append(
+                        f"flows.{flow.name}.{source.component}: transport.bind_address "
+                        f"{bind!r} is not 'host:port'"
+                    )
+                elif endpoint != manifest_endpoint:
+                    problems.append(
+                        f"flows.{flow.name}.{source.component}: transport.bind_address "
+                        f"{endpoint[0]}:{endpoint[1]} != manifest telemetry "
+                        f"{manifest_endpoint[0] if manifest_endpoint else None}:"
+                        f"{manifest_endpoint[1] if manifest_endpoint else None}"
+                    )
 
     for name, protocol in sorted(protocols.items()):
         if protocol not in PROTOCOLS:
@@ -1763,8 +1957,8 @@ def _flow_contract(
             )
         elif target.port is None or declared is None or target.port != declared:
             problems.append(
-                f"flows.{flow.name}.to: target port {target.port} != "
-                f"Orchestrator.rprPort {declared}"
+                f"flows.{flow.name}.to: target address {target.port} != "
+                f"Orchestrator.rpr_in {declared}"
             )
     elif targets:
         problems.append(
@@ -2212,16 +2406,20 @@ def check(
 
 def summary(model: SystemModel, manifest: Mapping[str, Any]) -> str:
     instances = _instances(manifest)
-    ports = sorted(
-        port
-        for instance in instances.values()
-        for name, port in _instance_ports(instance).items()
-        if name == "telemetry"
+    addresses = sorted(
+        (
+            address
+            for instance in instances.values()
+            for name, address in _instance_ports(instance).items()
+            if name == "telemetry"
+        ),
+        key=str,
     )
     return (
         f"{model.federation}: {len(instances)} entities, {len(model.processes)} host processes, "
         f"{len(model.flows)} flows, aircraft "
-        f"{len(model.aircraft.components)} components/{len(model.aircraft.wires)} wires, ports {ports}, "
+        f"{len(model.aircraft.components)} components/{len(model.aircraft.wires)} wires, "
+        f"addresses {addresses}, "
         f"frame {model.frame.origin.latitude_deg:.6f},{model.frame.origin.longitude_deg:.6f} "
         f"({model.frame.waypoint_frame}), {model.timing.mode} "
         f"step {model.timing.step_size_s}s stop {model.timing.stop_time_s}s"

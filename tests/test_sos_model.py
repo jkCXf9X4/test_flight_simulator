@@ -8,6 +8,7 @@ import zipfile
 from dataclasses import replace
 from functools import lru_cache
 from pathlib import Path
+from types import SimpleNamespace
 
 import entity_manifest
 import prepare_instance_bundle
@@ -112,18 +113,21 @@ def test_duplicate_placement_is_reported():
     assert any("placement (0.0, 5.0) collides with red_striker" in item for item in problems)
 
 
-def test_host_port_collision_is_reported():
+def test_host_address_collision_is_reported():
     model = _model()
     orchestrator = model.process("orchestrator")
     assert orchestrator is not None
-    collided = replace(orchestrator, ports={"rpr_in": 5510})
+    collided = replace(orchestrator, ports={"rpr_in": "@pysos-red-interceptor"})
 
     problems = sos_model.check(
         _manifest(),
         replace(model, processes=tuple(collided if item.name == "orchestrator" else item for item in model.processes)),
     )
 
-    assert any("port 5510 declared by both red_interceptor.telemetry" in item for item in problems)
+    assert any(
+        "address '@pysos-red-interceptor' declared by both red_interceptor.telemetry" in item
+        for item in problems
+    )
 
 
 def test_every_telemetry_port_feeds_a_modelled_flow():
@@ -134,7 +138,11 @@ def test_every_telemetry_port_feeds_a_modelled_flow():
 
     problems = sos_model.check(_manifest(), replace(model, flows=flows))
 
-    assert any("red_interceptor: telemetry port 5510 feeds no modelled flow" in item for item in problems)
+    assert any(
+        "red_interceptor: telemetry port @pysos-red-interceptor feeds no modelled flow"
+        in item
+        for item in problems
+    )
 
 
 def test_control_is_not_modelled():
@@ -145,7 +153,7 @@ def test_control_is_not_modelled():
         model, model.flows[0], _manifest(), _federation()
     )
     assert problems == []
-    assert resolved.protocol == "udp"
+    assert resolved.protocol == "unix"
     assert resolved.encoding == "rpr"
     assert resolved.rate_hz == pytest.approx(10.0)
     assert resolved.target == "orchestrator/rpr_in"
@@ -157,20 +165,20 @@ def test_marker_ports_are_accepted_without_an_external_flag():
     assert model.flows[0].protocol is None
     assert model.flows[0].encoding is None
     assert model.flows[0].rate_hz is None
-    assert model.process("orchestrator").ports["rpr_in"] == 5505
+    assert model.process("orchestrator").ports["rpr_in"] == "@pysos-recorder"
     assert sos_model.check(_manifest(), model) == []
 
 
-def test_marker_listener_without_rprPort_is_rejected(tmp_path):
+def test_marker_listener_without_an_address_is_rejected(tmp_path):
     source = tmp_path / "federation_system.sysml"
     source.write_text(
         MODEL_PATH.read_text(encoding="utf-8").replace(
-            '    attribute rprPort : Integer = 5505;\n', ""
+            '    attribute rprPath : String = "@pysos-recorder";\n', ""
         ),
         encoding="utf-8",
     )
 
-    with pytest.raises(sos_model.ModelError, match="rprPort"):
+    with pytest.raises(sos_model.ModelError, match="rprPath"):
         sos_model.load_model(source)
 
 
@@ -318,12 +326,12 @@ def test_frame_origin_drift_reaches_the_entity_identity_set():
 
 def test_transport_bind_must_match_the_telemetry_endpoint():
     manifest = _manifest()
-    _instance(manifest, "blue_cas")["telemetry"][0]["port"] = 5599
+    _instance(manifest, "blue_cas")["telemetry"][0]["path"] = "@pysos-wrong"
 
     problems = sos_model.check(manifest, _model())
 
     assert any(
-        "blue_cas: transport.bind_address 127.0.0.1:5514 != manifest telemetry 127.0.0.1:5599"
+        "blue_cas: transport.bind_address @pysos-blue-cas != manifest telemetry @pysos-wrong"
         in item
         for item in problems
     )
@@ -395,18 +403,19 @@ def test_system_plane_is_authored_in_sysml_v2():
     assert "private import AircraftFederation::*;" in text
     assert "port def RprBroadcast;" not in text
     assert "port def RprListener;" not in text
-    assert 'attribute rprPort : Integer = 5505;' in text
+    assert 'attribute rprPath : String = "@pysos-recorder";' in text
+    assert "--transport unix" in text
 
     model = _model()
     assert (REPO_ROOT / model.entity_model).is_file()
     assert model.instance_count == len(_manifest()["instances"])
-    assert model.process("orchestrator").ports["rpr_in"] == 5505
+    assert model.process("orchestrator").ports["rpr_in"] == "@pysos-recorder"
 
     resolved, problems = sos_model._flow_contract(
         model, model.flows[0], _manifest(), _federation()
     )
     assert problems == []
-    assert resolved.protocol == "udp"
+    assert resolved.protocol == "unix"
     assert resolved.encoding == "rpr"
     assert resolved.rate_hz == pytest.approx(10.0)
     assert resolved.target == "orchestrator/rpr_in"
@@ -641,10 +650,12 @@ def test_rpr_identity_and_reference_origin_land_in_the_instance_bundle(tmp_path)
         ssv = archive.read("resources/MissionScenario.ssv").decode("utf-8")
         ssm = archive.read("resources/HighAltitudeIntercept.ssm").decode("utf-8")
 
+    assert 'name="rpr_entity.transport"' in ssv
+    assert '"unix"' in ssv
     assert 'name="rpr_entity.bind_address"' in ssv
-    assert "127.0.0.1:5512" in ssv
+    assert "@pysos-instance-2" in ssv
     assert 'name="rpr_entity.peer_address"' in ssv
-    assert "127.0.0.1:5505" in ssv
+    assert "@pysos-recorder" in ssv
     assert 'name="rpr_state_source.reference_latitude_deg"' in ssv
     assert "-2.957519000" in ssv
     assert 'name="rpr_state_source.reference_longitude_deg"' in ssv
@@ -656,7 +667,9 @@ def test_rpr_identity_and_reference_origin_land_in_the_instance_bundle(tmp_path)
     assert 'target="rpr_state_source.reference_altitude_m"' in ssm
     assert "useBridgeInput" not in ssv
     assert summary["waypoint_frame"] == "federation"
-    assert summary["rpr_bind_address"] == "127.0.0.1:5512"
+    assert summary["transport"] == "unix"
+    assert summary["rpr_bind_address"] == "@pysos-instance-2"
+    assert summary["rpr_peer_address"] == "@pysos-recorder"
     assert summary["entity"] == "1/1/2"
     assert summary["marking"] == "RED-2"
 
@@ -738,3 +751,284 @@ def test_missing_participant_part_is_rejected(tmp_path):
 
     with pytest.raises(sos_model.ModelError, match="blue_baseline"):
         sos_model.load_model(source)
+
+
+class _UnixEndpoint:
+    """Entity-plane telemetry endpoint stand-in with the schema-2 unix shape."""
+
+    transport = "unix"
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.port = None
+        self.host = ""
+
+
+def _unix_model(model, peer: str):
+    orchestrator = model.process("orchestrator")
+    assert orchestrator is not None
+    patched = replace(orchestrator, ports={"rpr_in": peer})
+    participant = next(
+        instance.participant for instance in model.instances if instance.name == "red_striker"
+    )
+    return replace(
+        model,
+        instances=(
+            sos_model.Instance(name="red_striker", participant=participant, order=0),
+        ),
+        processes=tuple(
+            patched if process.name == "orchestrator" else process
+            for process in model.processes
+        ),
+        flows=(
+            sos_model.Flow(
+                name="rpr_broadcast_red_striker",
+                source="red_striker",
+                target="orchestrator/rpr_in",
+                protocol=None,
+                encoding=None,
+                rate_hz=None,
+            ),
+        ),
+    )
+
+
+def _unix_federation(model, *, telemetry: str, peer: str):
+    launch = SimpleNamespace(
+        mode="supervised",
+        readiness="none",
+        timeout_s=30.0,
+        order=1,
+        after_process="orchestrator",
+    )
+    entity = SimpleNamespace(site=1, application=1, entity=1, marking="RED-1")
+    instance = SimpleNamespace(
+        name="red_striker",
+        aircraft=model.aircraft.key,
+        launch=launch,
+        identity_values={
+            "entity_site": 1,
+            "entity_application": 1,
+            "entity_entity": 1,
+            "marking_characters": "RED-1",
+        },
+        telemetry_ports=[_UnixEndpoint(telemetry)],
+        control_ports=[],
+        count=1,
+        transport_values={
+            "transport": "unix",
+            "bind_address": telemetry,
+            "peer_address": peer,
+        },
+        entities=[entity],
+        application_values={
+            "scenario": "test_scenario",
+            "command": "python app --variant RedStriker",
+        },
+    )
+    return SimpleNamespace(name=model.federation, instances=[instance])
+
+
+def _unix_instance(bind: str, peer: str) -> dict:
+    return {
+        "name": "red_striker",
+        "command": ["python3", "scripts/run_instance_process.py", "--instance", "1"],
+        "cwd": ".",
+        "env": {
+            "PYSOS_SCENARIO": "test_scenario",
+            "PYSOS_TRANSPORT": "unix",
+            "PYSOS_TELEMETRY_PATH": bind,
+            "PYSOS_LAUNCH_MODE": "supervised",
+            "PYSOS_READINESS": "none",
+            "PYSOS_LAUNCH_ORDER": "1",
+            "PYSOS_AFTER_PROCESS": "orchestrator",
+        },
+        "entities": [
+            {"site": "1", "application": "1", "entity": "1", "marking": "RED-1"}
+        ],
+        "telemetry": [{"transport": "unix", "path": bind}],
+        "control": [],
+        "startup_timeout": 30.0,
+    }
+
+
+def _unix_manifest(bind: str, peer: str) -> dict:
+    model = _model()
+    return {
+        "schema": 2,
+        "name": model.federation,
+        "timing": "wall_clock",
+        "instances": [_unix_instance(bind, peer)],
+    }
+
+
+def test_schema_two_unix_manifest_passes_endpoint_and_flow_checks():
+    model = _model()
+    bind = "/tmp/pysos/red_striker.sock"
+    peer = "/tmp/pysos/recorder.sock"
+    unix_model = _unix_model(model, peer)
+    federation = _unix_federation(model, telemetry=bind, peer=peer)
+    manifest = _unix_manifest(bind, peer)
+    FederationSpec.from_json(manifest).validate()
+
+    assert sos_model._check_ports(manifest, unix_model) == []
+    assert sos_model._check_entity_model(manifest, unix_model, federation) == []
+    resolved, problems = sos_model._flow_contract(
+        unix_model, unix_model.flows[0], manifest, federation
+    )
+    assert problems == []
+    assert resolved.protocol == "unix"
+
+
+def test_duplicate_unix_paths_are_rejected():
+    model = _model()
+    path = "/tmp/pysos/shared.sock"
+    manifest = {
+        "name": model.federation,
+        "instances": [
+            {"name": "red_striker", "telemetry": [{"transport": "unix", "path": path}]},
+            {"name": "red_interceptor", "telemetry": [{"transport": "unix", "path": path}]},
+        ],
+    }
+
+    problems = sos_model._check_ports(manifest, model)
+
+    assert any(
+        f"address {path!r} declared by both red_striker.telemetry and red_interceptor.telemetry"
+        in problem
+        for problem in problems
+    )
+
+
+def test_unknown_entity_transport_is_still_rejected():
+    model = _model()
+    bind = "/tmp/pysos/red_striker.sock"
+    peer = "/tmp/pysos/recorder.sock"
+    unix_model = _unix_model(model, peer)
+    federation = _unix_federation(model, telemetry=bind, peer=peer)
+    federation.instances[0].transport_values = {
+        "transport": "loopback",
+        "bind_address": bind,
+        "peer_address": peer,
+    }
+    manifest = _unix_manifest(bind, peer)
+
+    problems = sos_model._check_entity_model(manifest, unix_model, federation)
+
+    assert any(
+        "red_striker: transport 'loopback' is not 'udp' or 'unix'" in item
+        for item in problems
+    )
+
+
+def _udp_federation(model, *, telemetry_port: int, peer_port: int):
+    launch = SimpleNamespace(
+        mode="supervised",
+        readiness="socket_bound",
+        timeout_s=30.0,
+        order=1,
+        after_process="orchestrator",
+    )
+    endpoint = SimpleNamespace(
+        transport="udp",
+        host="127.0.0.1",
+        port=telemetry_port,
+        path=None,
+    )
+    entity = SimpleNamespace(site=1, application=1, entity=1, marking="RED-1")
+    instance = SimpleNamespace(
+        name="red_striker",
+        aircraft=model.aircraft.key,
+        launch=launch,
+        identity_values={
+            "entity_site": 1,
+            "entity_application": 1,
+            "entity_entity": 1,
+            "marking_characters": "RED-1",
+        },
+        telemetry_ports=[endpoint],
+        control_ports=[],
+        count=1,
+        transport_values={
+            "transport": "udp",
+            "bind_address": f"127.0.0.1:{telemetry_port}",
+            "peer_address": f"127.0.0.1:{peer_port}",
+        },
+        entities=[entity],
+        application_values={
+            "scenario": "test_scenario",
+            "command": "python app --variant RedStriker",
+        },
+    )
+    return SimpleNamespace(name=model.federation, instances=[instance])
+
+
+def _udp_manifest(telemetry_port: int) -> dict:
+    model = _model()
+    return {
+        "schema": 1,
+        "name": model.federation,
+        "timing": "wall_clock",
+        "instances": [
+            {
+                "name": "red_striker",
+                "command": [
+                    "python3",
+                    "scripts/run_instance_process.py",
+                    "--instance",
+                    "1",
+                ],
+                "cwd": ".",
+                "env": {
+                    "PYSOS_SCENARIO": "test_scenario",
+                    "PYSOS_TELEMETRY_PORT": str(telemetry_port),
+                    "PYSOS_LAUNCH_MODE": "supervised",
+                    "PYSOS_READINESS": "socket_bound",
+                    "PYSOS_LAUNCH_ORDER": "1",
+                    "PYSOS_AFTER_PROCESS": "orchestrator",
+                },
+                "entities": [
+                    {
+                        "site": "1",
+                        "application": "1",
+                        "entity": "1",
+                        "marking": "RED-1",
+                    }
+                ],
+                "telemetry": [{"host": "127.0.0.1", "port": telemetry_port}],
+                "control": [],
+                "startup_timeout": 30.0,
+            }
+        ],
+    }
+
+
+def test_explicit_udp_model_keeps_port_checks():
+    model = _model()
+    udp_model = _unix_model(model, 5505)
+    federation = _udp_federation(model, telemetry_port=5512, peer_port=5505)
+    manifest = _udp_manifest(5512)
+
+    assert sos_model._check_manifest(manifest, replace(udp_model, instance_count=1)) == []
+    assert sos_model._check_ports(manifest, udp_model) == []
+    assert sos_model._check_entity_model(manifest, udp_model, federation) == []
+    resolved, problems = sos_model._flow_contract(
+        udp_model, udp_model.flows[0], manifest, federation
+    )
+    assert problems == []
+    assert resolved.protocol == "udp"
+
+
+def test_explicit_udp_rpr_port_listener_is_supported(tmp_path):
+    source = tmp_path / "federation_system.sysml"
+    source.write_text(
+        MODEL_PATH.read_text(encoding="utf-8").replace(
+            '    attribute rprPath : String = "@pysos-recorder";\n',
+            "    attribute rprPort : Integer = 5505;\n",
+        ),
+        encoding="utf-8",
+    )
+
+    model = sos_model.load_model(source)
+
+    assert model.process("orchestrator").ports["rpr_in"] == 5505

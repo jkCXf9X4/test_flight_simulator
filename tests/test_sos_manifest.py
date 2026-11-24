@@ -12,13 +12,19 @@ from pysos_coordinate import Federation, FederationSpec
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SYSML = REPO_ROOT / "sos" / "aircraft_federation.sysml"
 MANIFEST = REPO_ROOT / "manifests" / "aircraft_federation.manifest.json"
-RPR_PORT = 5505
+RECORDER = "@pysos-recorder"
+BIND_SOCKETS = (
+    "@pysos-red-interceptor",
+    "@pysos-red-striker",
+    "@pysos-blue-cas",
+    "@pysos-blue-baseline",
+)
 
 EXPECTED = {
-    "red_interceptor": ("1", 5510, "RED-1", "RedInterceptor"),
-    "red_striker": ("2", 5512, "RED-2", "RedStriker"),
-    "blue_cas": ("3", 5514, "BLUE-1", "BlueCas"),
-    "blue_baseline": ("4", 5516, "BLUE-2", "BlueBaseline"),
+    "red_interceptor": ("1", "@pysos-red-interceptor", "RED-1", "RedInterceptor"),
+    "red_striker": ("2", "@pysos-red-striker", "RED-2", "RedStriker"),
+    "blue_cas": ("3", "@pysos-blue-cas", "BLUE-1", "BlueCas"),
+    "blue_baseline": ("4", "@pysos-blue-baseline", "BLUE-2", "BlueBaseline"),
 }
 
 SCENARIOS = {
@@ -62,7 +68,7 @@ def test_every_entity_launch_spec_is_lowered():
     for instance in _manifest_json()["instances"]:
         assert instance["startup_timeout"] == 30.0
         assert instance["env"]["PYSOS_LAUNCH_MODE"] == "supervised"
-        assert instance["env"]["PYSOS_READINESS"] == "port_bound"
+        assert instance["env"]["PYSOS_READINESS"] == "socket_bound"
         assert instance["env"]["PYSOS_LAUNCH_ORDER"] == "2"
         assert instance["env"]["PYSOS_AFTER_PROCESS"] == "supervisor"
 
@@ -70,7 +76,7 @@ def test_every_entity_launch_spec_is_lowered():
 def test_manifest_is_accepted_by_coordinate_and_constructs():
     spec = FederationSpec.from_json(_manifest_json())
     assert spec.validate() is spec
-    assert spec.schema == 1
+    assert spec.schema == 2
     federation = Federation(spec)
     assert len(federation.spec.instances) == 4
 
@@ -81,19 +87,25 @@ def test_four_distinct_entities_and_unique_endpoints():
     entities = [instance.entities[0].entity for instance in spec.instances]
     assert entities == ["1", "2", "3", "4"]
     assert len(set(entities)) == 4
-    ports = [endpoint.port for instance in spec.instances for endpoint in instance.telemetry]
-    assert ports == [5510, 5512, 5514, 5516]
-    assert len(ports) == len(set(ports))
+    sockets = [
+        endpoint.path for instance in spec.instances for endpoint in instance.telemetry
+    ]
+    assert sockets == list(BIND_SOCKETS)
+    assert len(sockets) == len(set(sockets))
+    assert all(endpoint.transport == "unix" for instance in spec.instances for endpoint in instance.telemetry)
     assert all(not instance.control for instance in spec.instances)
-    assert RPR_PORT not in ports
+    assert RECORDER not in sockets
 
 
-def test_env_carries_the_telemetry_port_and_the_scenario_name():
+def test_env_carries_the_telemetry_path_and_the_scenario_name():
     data = _manifest_json()
     for instance in data["instances"]:
         _entity, telemetry, _marking, _variant = EXPECTED[instance["name"]]
-        assert instance["env"]["PYSOS_TELEMETRY_PORT"] == str(telemetry)
+        assert instance["env"]["PYSOS_TRANSPORT"] == "unix"
+        assert instance["env"]["PYSOS_TELEMETRY_PATH"] == telemetry
         assert instance["env"]["PYSOS_SCENARIO"] == SCENARIOS[instance["name"]]
+        assert "PYSOS_TELEMETRY_PORT" not in instance["env"]
+        assert "PYSOS_CONTROL_PATH" not in instance["env"]
         assert "PYSOS_CONTROL_PORT" not in instance["env"]
 
 

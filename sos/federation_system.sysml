@@ -2,7 +2,7 @@
 // other piece of software that runs, the frame and timing they share, the flows
 // between them, and the artifacts a run is judged by.
 //
-// Authored in SysML v2 and lowered by scripts/sos_model.py (pycps_sysml2 IR).
+// Authored in SysML v2 and lowered by scripts/sos_model.py (pycps_sysml IR).
 // The entity plane — the four named aircraft participants with their ports,
 // scenarios and run parameters — stays in sos/aircraft_federation.sysml and is
 // lowered by pysos_sysml to the pysos_coordinate manifest. The system plane
@@ -61,15 +61,15 @@ package FederationSystem {
 
   // -- host-side participants ---------------------------------------------
   // The orchestrator supervises the instance processes and listens on the
-  // dedicated RPR fan-in port; it writes truth/measure/rrd, never a live JSON
+  // dedicated RPR fan-in socket; it writes truth/measure/rrd, never a live JSON
   // stream.
   part def Orchestrator :> Application {
     port rpr_in : RprListener;
     attribute rprHost : String = "127.0.0.1";
-    attribute rprPort : Integer = 5505;
+    attribute rprPath : String = "@pysos-recorder";
     attribute roles : String = "supervisor,recorder";
     attribute cwd : String = ".";
-    attribute command : String = "python scripts/run_e2e_rpr.py --manifest manifests/aircraft_federation.manifest.json --scenario 3rd_party/airplane/resources/scenarios/test_scenario.json --run-dir build/runs/sos4 --stop-time 120 --realtime";
+    attribute command : String = "python scripts/run_e2e_rpr.py --manifest manifests/aircraft_federation.manifest.json --transport unix --scenario 3rd_party/airplane/resources/scenarios/test_scenario.json --run-dir build/runs/sos4 --stop-time 120 --realtime";
     part launch : LaunchSpec {
       attribute mode : String = "operator";
       attribute readiness : String = "port_bound";
@@ -79,7 +79,7 @@ package FederationSystem {
     }
   }
 
-  // The viewer replays the recorder truth stream; it owns no UDP socket.
+  // The viewer replays the recorder truth stream; it owns no transport socket.
   part def Viewer :> Application {
     attribute roles : String = "visualizer";
     attribute cwd : String = ".";
@@ -146,7 +146,7 @@ package FederationSystem {
     part artifacts : Artifacts;
 
     // One outbound RPR broadcast per participant, fanned in on the recorder's
-    // listener port.
+    // listener socket.
     connection rpr_broadcast_red_interceptor connect red_interceptor.telemetry to orchestrator.rpr_in;
     connection rpr_broadcast_red_striker connect red_striker.telemetry to orchestrator.rpr_in;
     connection rpr_broadcast_blue_cas connect blue_cas.telemetry to orchestrator.rpr_in;

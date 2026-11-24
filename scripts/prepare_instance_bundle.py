@@ -3,9 +3,12 @@
 
 With ``variant`` set, the per-variant archive under ``build/ssp/variants`` is
 already self-contained (its Scenario/Identity/Transport parameter sets and SSD
-mappings are inline), so this script copies that archive unchanged and writes
-only the per-instance ssp4sim config. The legacy path below remains for the
-baseline ``build/ssp/scenario.ssp``:
+mappings are inline). Explicit UDP with no address override copies that archive
+unchanged and writes only the per-instance ssp4sim config. Unix (the default) or
+an explicit transport/address override rewrites only the archive's
+``resources/parameter_sets/<Variant>Transport.ssv`` in place; every other member
+and the SSD mapping stay byte-identical. The
+legacy path below remains for the baseline ``build/ssp/scenario.ssp``:
 
 The source SSP already binds ``resources/MissionScenario.ssv`` and
 ``resources/HighAltitudeIntercept.ssm`` in its ``SystemStructure.ssd``. This
@@ -28,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import tempfile
 import zipfile
@@ -66,6 +70,13 @@ RPR_STATE_SOURCE = "rpr_state_source"
 RPR_RECORDER_ADDRESS = "127.0.0.1:5505"
 #: Manifest instance endpoints are loopback; only the per-instance port varies.
 RPR_BIND_HOST = "127.0.0.1"
+#: RPR transport values accepted on the command line and written into the SSV.
+TRANSPORT_CHOICES = ("udp", "unix")
+#: Default abstract-socket namespace when neither flags nor env choose one.
+DEFAULT_UNIX_PREFIX = "pysos"
+DEFAULT_UNIX_RECORDER_ADDRESS = f"@{DEFAULT_UNIX_PREFIX}-recorder"
+#: Archive member carrying a variant's exported ``Transport`` parameter set.
+TRANSPORT_SSV_TEMPLATE = "resources/parameter_sets/{variant}Transport.ssv"
 #: The JSON bridge is gone from the aircraft SSP; drop anything it left behind.
 LEGACY_BRIDGE_PREFIX = "udp_bridge."
 LEGACY_BRIDGE_INPUT = "useBridgeInput"
@@ -100,6 +111,17 @@ def instance_defaults(index: int) -> dict[str, float | int]:
         "offset_north_km": 0.0,
         "offset_east_km": (index - 1) * 5.0,
     }
+
+
+def default_unix_bind_address(
+    variant: str | None,
+    index: int,
+    instance_name: str | None = None,
+) -> str:
+    """Deterministic bind address when nothing explicit or in the env is given."""
+
+    label = variant or instance_name or f"instance-{index}"
+    return f"@{DEFAULT_UNIX_PREFIX}-{label}"
 
 
 def _scenario_parameter_set(
@@ -211,11 +233,16 @@ def _is_legacy_bridge(name: str | None) -> bool:
     )
 
 
-def _rewrite_ssv(payload: bytes, updates: dict[str, tuple[str, str]]) -> bytes:
+def _rewrite_ssv(
+    payload: bytes,
+    updates: dict[str, tuple[str, str]],
+    *,
+    member: str = SSV_MEMBER,
+) -> bytes:
     root = ET.fromstring(payload)
     params = root.find(f"{{{NS_SSV}}}Parameters")
     if params is None:
-        raise SystemExit(f"{SSV_MEMBER}: no <ssv:Parameters> element")
+        raise SystemExit(f"{member}: no <ssv:Parameters> element")
     for parameter in list(params.findall(f"{{{NS_SSV}}}Parameter")):
         if _is_legacy_bridge(parameter.get("name")):
             params.remove(parameter)
@@ -337,12 +364,166 @@ def _resolve_stop_time(source_ssp: Path) -> float:
     raise SystemExit(f"{source_ssp}: cannot resolve a default stop time; pass --stop-time")
 
 
+def _transport_member(variant: str) -> str:
+    return TRANSPORT_SSV_TEMPLATE.format(variant=variant)
+
+
+def _reject_unix_scheme(flag: str, value: str) -> str:
+    if value.startswith("unix://"):
+        raise SystemExit(
+            f"{flag} takes a bare address ('/abs/path.sock' or '@abstract-name'), "
+            f"not a URL scheme: {value!r}"
+        )
+    return value
+
+
+def _validate_unix_address(flag: str, value: str) -> str:
+    _reject_unix_scheme(flag, value)
+    if value.startswith("@"):
+        if len(value) == 1:
+            raise SystemExit(f"{flag} abstract name is empty: {value!r}")
+        return value
+    if not Path(value).is_absolute():
+        raise SystemExit(
+            f"{flag} must be an absolute socket path or '@abstract-name', got {value!r}"
+        )
+    return value
+
+
+def _env_text(name: str) -> str | None:
+    raw = os.environ.get(name)
+    return raw.strip() if raw and raw.strip() else None
+
+
+def resolve_env_transport() -> tuple[str, str | None, str | None]:
+    """Read the lowered transport environment; unix is the default.
+
+    ``PYSOS_TRANSPORT`` wins when set. Otherwise a lowered socket path
+    (``PYSOS_TELEMETRY_PATH``/``PYSOS_CONTROL_PATH``) selects unix and a
+    ``PYSOS_TELEMETRY_PORT`` (the schema-1 UDP manifest) selects udp, so a UDP
+    manifest keeps working without an explicit flag. With no transport
+    environment at all the new unix default applies. Those addresses are bare
+    paths, not ports.
+    """
+
+    raw = _env_text("PYSOS_TRANSPORT")
+    if raw is not None:
+        transport = raw
+    elif _env_text("PYSOS_TELEMETRY_PATH") or _env_text("PYSOS_CONTROL_PATH"):
+        transport = "unix"
+    elif _env_text("PYSOS_TELEMETRY_PORT"):
+        transport = "udp"
+    else:
+        transport = "unix"
+    if transport not in TRANSPORT_CHOICES:
+        raise SystemExit(
+            f"PYSOS_TRANSPORT must be one of {', '.join(TRANSPORT_CHOICES)}, "
+            f"got {transport!r}"
+        )
+    if transport != "unix":
+        return transport, None, None
+    return transport, _env_text("PYSOS_TELEMETRY_PATH"), _env_text("PYSOS_CONTROL_PATH")
+
+
+def resolve_transport(
+    transport: str,
+    bind_address: str | None,
+    peer_address: str | None,
+    telemetry_port: int,
+) -> tuple[str, str, str]:
+    """Resolve the ``transport``/``bind_address``/``peer_address`` SSV triple."""
+
+    if transport not in TRANSPORT_CHOICES:
+        raise SystemExit(
+            f"--transport must be one of {', '.join(TRANSPORT_CHOICES)}, got {transport!r}"
+        )
+    if transport == "unix":
+        if not bind_address or not peer_address:
+            raise SystemExit(
+                "--transport unix requires --bind-address and --peer-address"
+            )
+        return (
+            transport,
+            _validate_unix_address("--bind-address", bind_address),
+            _validate_unix_address("--peer-address", peer_address),
+        )
+    bind = _reject_unix_scheme(
+        "--bind-address",
+        bind_address if bind_address is not None else f"{RPR_BIND_HOST}:{telemetry_port}",
+    )
+    peer = _reject_unix_scheme(
+        "--peer-address",
+        peer_address if peer_address is not None else RPR_RECORDER_ADDRESS,
+    )
+    return transport, bind, peer
+
+
+def _overlay_variant_transport(
+    source_ssp: Path,
+    dest_ssp: Path,
+    variant: str,
+    transport: str,
+    bind_address: str,
+    peer_address: str,
+) -> None:
+    """Rewrite only the variant's Transport SSV; every other member is untouched."""
+
+    member = _transport_member(variant)
+    with zipfile.ZipFile(source_ssp) as archive:
+        names = archive.namelist()
+        if member not in names:
+            raise SystemExit(
+                f"{source_ssp}: missing {member}; expected the exported "
+                f"'{variant}Transport' parameter set"
+            )
+        entries = [(info, archive.read(info.filename)) for info in archive.infolist()]
+
+    contents = {info.filename: data for info, data in entries}
+    updates = {
+        "transport": ("String", transport),
+        "bind_address": ("String", bind_address),
+        "peer_address": ("String", peer_address),
+    }
+    rewritten = _rewrite_ssv(contents[member], updates, member=member)
+    _write_bundle(
+        dest_ssp,
+        [(info, rewritten if info.filename == member else data) for info, data in entries],
+    )
+    _verify_parameter_set(dest_ssp, member, updates)
+
+
+def _verify_parameter_set(
+    dest_ssp: Path,
+    member: str,
+    updates: dict[str, tuple[str, str]],
+) -> None:
+    with zipfile.ZipFile(dest_ssp) as archive:
+        root = ET.fromstring(archive.read(member))
+    params = root.find(f"{{{NS_SSV}}}Parameters")
+    if params is None:
+        raise SystemExit(f"{dest_ssp}: {member} has no <ssv:Parameters> element")
+    for name, (tag, value) in updates.items():
+        for parameter in params.findall(f"{{{NS_SSV}}}Parameter"):
+            if parameter.get("name") != name:
+                continue
+            child = parameter.find(f"{{{NS_SSV}}}{tag}")
+            if child is None or child.get("value") != value:
+                raise SystemExit(f"{dest_ssp}: verification failed for {name}")
+            break
+        else:
+            raise SystemExit(f"{dest_ssp}: verification failed, {name} missing")
+
+
 def prepare_instance(
     index: int,
     source_ssp: Path,
     out_dir: Path,
     *,
     telemetry_port: int | None = None,
+    transport: str = "unix",
+    bind_address: str | None = None,
+    peer_address: str | None = None,
+    instance_name: str | None = None,
     offset_north_km: float | None = None,
     offset_east_km: float | None = None,
     working_dir: Path | None = None,
@@ -373,6 +554,16 @@ def prepare_instance(
         raise SystemExit(f"waypoint frame must be 'local' or 'federation', got {waypoint_frame!r}")
     if not 1 <= telemetry <= 65535:
         raise SystemExit(f"--telemetry-port out of range: {telemetry}")
+    if transport == "unix":
+        # Explicit flags and env addresses arrive here already resolved; only a
+        # genuinely absent side falls back to the deterministic default.
+        bind_address = bind_address or default_unix_bind_address(
+            variant, index, instance_name
+        )
+        peer_address = peer_address or DEFAULT_UNIX_RECORDER_ADDRESS
+    transport_value, bind_value, peer_value = resolve_transport(
+        transport, bind_address, peer_address, telemetry
+    )
     try:
         entity_numbers = tuple(int(value) for value in (entity_site, entity_application, entity or index))
     except ValueError:
@@ -392,7 +583,11 @@ def prepare_instance(
         if not source_ssp.is_file():
             raise SystemExit(f"Source SSP not found: {source_ssp}")
 
-    instance_dir = out_dir.resolve() / f"instance-{index}"
+    bundle_name = instance_name or f"instance-{index}"
+    if not bundle_name or bundle_name in (".", "..") or "/" in bundle_name:
+        raise SystemExit(f"invalid instance bundle name: {bundle_name!r}")
+    instance_label = instance_name or str(index)
+    instance_dir = out_dir.resolve() / bundle_name
     instance_dir.mkdir(parents=True, exist_ok=True)
     config_path = instance_dir / "config.json"
     work_dir = (working_dir or instance_dir / "work").resolve()
@@ -404,8 +599,21 @@ def prepare_instance(
     if variant_ssp is not None:
         # The variant archive is self-contained: copy it byte-for-byte and let
         # its inline parameter sets carry scenario, identity and transport.
+        # Explicit UDP with no address override is exactly that fast path; the
+        # unix default (or any override) rewrites only the Transport
+        # parameter-set member.
         dest_ssp = instance_dir / variant_ssp.name
-        dest_ssp.write_bytes(variant_ssp.read_bytes())
+        if transport == "udp" and bind_address is None and peer_address is None:
+            dest_ssp.write_bytes(variant_ssp.read_bytes())
+        else:
+            _overlay_variant_transport(
+                variant_ssp,
+                dest_ssp,
+                variant,
+                transport_value,
+                bind_value,
+                peer_value,
+            )
         resolved_stop_time = (
             float(stop_time)
             if stop_time is not None
@@ -424,7 +632,7 @@ def prepare_instance(
         write_simulation_config(config=config, result_file=csv_file, config_path=config_path)
 
         summary = {
-            "instance": str(index),
+            "instance": instance_label,
             "ssp": str(dest_ssp),
             "config": str(config_path),
             "working_dir": str(work_dir),
@@ -433,6 +641,9 @@ def prepare_instance(
             "stop_time": f"{resolved_stop_time}",
             "realtime": str(realtime).lower(),
             "variant": variant,
+            "transport": transport_value,
+            "rpr_bind_address": bind_value,
+            "rpr_peer_address": peer_value,
         }
         if scenario is not None:
             summary["scenario"] = scenario
@@ -461,9 +672,9 @@ def prepare_instance(
     updates = {
         INIT_X_PARAM: ("Real", f"{base_north + north:.6f}"),
         INIT_Y_PARAM: ("Real", f"{base_east + east:.6f}"),
-        f"{RPR_ENTITY}.transport": ("String", "udp"),
-        f"{RPR_ENTITY}.bind_address": ("String", f"{RPR_BIND_HOST}:{telemetry}"),
-        f"{RPR_ENTITY}.peer_address": ("String", RPR_RECORDER_ADDRESS),
+        f"{RPR_ENTITY}.transport": ("String", transport_value),
+        f"{RPR_ENTITY}.bind_address": ("String", bind_value),
+        f"{RPR_ENTITY}.peer_address": ("String", peer_value),
         f"{RPR_STATE_SOURCE}.entity_site": ("Integer", str(entity_numbers[0])),
         f"{RPR_STATE_SOURCE}.entity_application": ("Integer", str(entity_numbers[1])),
         f"{RPR_STATE_SOURCE}.entity_entity": ("Integer", str(entity_numbers[2])),
@@ -537,14 +748,16 @@ def prepare_instance(
     write_simulation_config(config=config, result_file=csv_file, config_path=config_path)
 
     return {
-        "instance": str(index),
+        "instance": instance_label,
         "ssp": str(dest_ssp),
         "config": str(config_path),
         "working_dir": str(work_dir),
         "csv": str(csv_file),
         "log": str(log_file),
         "telemetry_port": str(telemetry),
-        "rpr_bind_address": f"{RPR_BIND_HOST}:{telemetry}",
+        "transport": transport_value,
+        "rpr_bind_address": bind_value,
+        "rpr_peer_address": peer_value,
         "init_x_km": updates[INIT_X_PARAM][1],
         "init_y_km": updates[INIT_Y_PARAM][1],
         "stop_time": f"{resolved_stop_time}",
@@ -569,6 +782,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="Directory for instance bundles.")
     parser.add_argument("--telemetry-port", type=int, default=None, help="Per-instance RPR bind UDP port.")
+    parser.add_argument(
+        "--transport",
+        choices=TRANSPORT_CHOICES,
+        default=None,
+        help="RPR transport: Unix datagram sockets (default) or UDP (escape hatch); defaults to PYSOS_TRANSPORT.",
+    )
+    parser.add_argument(
+        "--bind-address",
+        default=None,
+        help="RPR bind address; in unix mode '/abs/path.sock' or '@abstract-name'.",
+    )
+    parser.add_argument(
+        "--peer-address",
+        default=None,
+        help="RPR peer address; in unix mode '/abs/path.sock' or '@abstract-name'.",
+    )
     parser.add_argument("--offset-north-km", type=float, default=None, help="Shift initX_km by this many kilometres.")
     parser.add_argument("--offset-east-km", type=float, default=None, help="Shift initY_km by this many kilometres.")
     parser.add_argument("--working-dir", type=Path, default=None, help="Simulation working directory.")
@@ -595,11 +824,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    env_transport, env_bind, env_peer = resolve_env_transport()
+    transport = args.transport if args.transport is not None else env_transport
+    unix = transport == "unix"
+    bind_address = args.bind_address
+    if bind_address is None and unix:
+        bind_address = env_bind
+    peer_address = args.peer_address
+    if peer_address is None and unix:
+        peer_address = env_peer
     summary = prepare_instance(
         args.instance,
         args.source_ssp,
         args.out_dir,
-        telemetry_port=args.telemetry_port,
+        telemetry_port=None if unix else args.telemetry_port,
+        transport=transport,
+        bind_address=bind_address,
+        peer_address=peer_address,
         offset_north_km=args.offset_north_km,
         offset_east_km=args.offset_east_km,
         working_dir=args.working_dir,

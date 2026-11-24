@@ -10,11 +10,12 @@ Top-level workspace for running the airplane SSP and evolving the interactive si
 
 ## Just Works
 
-The supported live workflow is ROS-free: `ssp4sim` runs on the host, the aircraft SSP broadcasts RPR entity state to the recorder on UDP 5505, and the Rerun viewer replays the recorder's truth stream.
+The supported live workflow is ROS-free: `ssp4sim` runs on the host, the aircraft SSP broadcasts RPR entity state to the recorder over Unix datagram sockets by default, and the Rerun viewer replays the recorder's truth stream. `TRANSPORT=udp` keeps the legacy UDP 5505 path.
 
 ```bash
 ./scripts/build_airplane.py
-./scripts/run_rerun_stack.sh
+./scripts/run_rerun_stack.sh                 # unix datagram sockets (default)
+TRANSPORT=udp ./scripts/run_rerun_stack.sh   # UDP 5505 escape hatch
 ```
 
 `run_rerun_stack.sh` starts the realtime run, waits for the run artifacts to advance, then replays `build/runs/<run>/truth.jsonl` with
@@ -38,13 +39,13 @@ Other useful entry points:
 - Rebuild SSP/FMU artifacts and refresh the local `build/ssp` bundle: `./scripts/build_airplane.py`
 - Run a batch simulation from the local bundle: `./scripts/run_airplane_scenario.py`
 - Run a realtime batch simulation from the local bundle: `./scripts/run_airplane_scenario.py --realtime`
-- Run the two-instance federation through `pysos_coordinate` (validate first with `--dry-run`): `./scripts/run_instances.py --instances 2`
+- Run the two-instance federation through `pysos_coordinate` over unix sockets (validate first with `--dry-run`): `./scripts/run_instances.py --instances 2` (`--transport udp` for UDP)
 - Regenerate the checked-in federation manifest from the scenario settings: `./scripts/generate_instance_manifest.py`
 - Headless Rerun smoke test (no X11, no Podman): `./scripts/container_rerun_smoke.sh`
 - Read the workflow notes: `docs/simulation_workflow.md`
 
 ## Interactive Direction
 
-The supported live setup keeps `ssp4sim` as the simulation master on the host. Every aircraft broadcasts its own RPR entity-state packets to the recorder on UDP 5505; the recorder writes `truth.jsonl`, `measurements.csv` and `recording.rrd`, and `flight_viewer` replays the truth stream with Rerun.
+The supported live setup keeps `ssp4sim` as the simulation master on the host. Every aircraft broadcasts its own RPR entity-state packets to the recorder over Unix datagram sockets by default (UDP 5505 with `TRANSPORT=udp`); the recorder writes `truth.jsonl`, `measurements.csv` and `recording.rrd`, and `flight_viewer` replays the truth stream with Rerun.
 
 There is no live JSON telemetry/control bridge and no pilot shim. The RViz runtime has been retired; the live stack is the Rerun viewer replaying the recorder output.

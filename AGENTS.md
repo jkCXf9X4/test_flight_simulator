@@ -1,26 +1,26 @@
 # AGENTS
 
-Test workspace for the flight-sim interactive simulation stack. Runs the `ssp_airplane` airplane SSP through `ssp4sim`; the live visualization is ROS-free (`flight_viewer` + Rerun). The aircraft broadcasts RPR entity state to the recorder on UDP 5505; the recorder writes truth/measure/rrd and the viewer replays the truth stream. The JSON telemetry/control bridge and pilot shim are retired.
+Test workspace for the flight-sim interactive simulation stack. Runs the `ssp_airplane` airplane SSP through `ssp4sim`; the live visualization is ROS-free (`flight_viewer` + Rerun). The aircraft broadcasts RPR entity state to the recorder over Unix datagram sockets by default (`--transport udp` selects UDP 5505); the recorder writes truth/measure/rrd and the viewer replays the truth stream. The JSON telemetry/control bridge and pilot shim are retired.
 
 Key scripts:
 - `scripts/check_environment.sh` — validate host prerequisites (`--source-build`, `--live-container`, `--container-build`)
 - `scripts/build_airplane.py` — build the airplane SSP/FMUs, refresh the local `build/ssp` bundle, then export the per-variant SSPs (resolves `$PYTHON` / workspace venv / airplane venv; run `check_environment.sh --source-build` first; `--skip-variant-export` skips the export)
 - `scripts/export_aircraft_variants.py` — export `build/ssp/variants/<Variant>.ssp` for all four variants from the entity plane (11 components, 3 parameter sets, `DefaultExperiment` stop 120 s); stages an FMU root that resolves both `build/fmus/<Name>.fmu` and the bare `RprEntity.fmu`
 - `scripts/build_rerun_container.sh` — build the Podman Rerun viewer image (`Containerfile.rerun`)
-- `scripts/run_rerun_stack.sh` — run the realtime sim plus the Rerun viewer replaying the recorder output; host venv by default, `RERUN_CONTAINER=1` for the Podman image, `RERUN_WEB=1` for the web viewer in Chrome with SwiftShader WebGL2
+- `scripts/run_rerun_stack.sh` — run the realtime sim plus the Rerun viewer replaying the recorder output; unix transport by default (`TRANSPORT=udp`, `UNIX_DIR` select the escape hatch/pathname sockets), host venv by default, `RERUN_CONTAINER=1` for the Podman image, `RERUN_WEB=1` for the web viewer in Chrome with SwiftShader WebGL2
 - `scripts/container_rerun_smoke.sh` — headless Rerun recording smoke test (no X11, no Podman)
 - `scripts/run_airplane_scenario.py` — run a batch/realtime scenario from the local bundle
-- `scripts/prepare_instance_bundle.py` — prepare a per-instance SSP bundle and ssp4sim config; `--variant` copies the pre-exported variant SSP byte-for-byte, while the legacy path rewrites scenario/identity/transport SSV/SSM for the baseline bundle
-- `scripts/run_instances.py` — run the instance federation through `pysos_coordinate.Federation`
-- `scripts/entity_manifest.py` — lower/check the schema-1 `manifests/aircraft_federation.manifest.json` from the entity plane, resolving its `Aircraft`/`PysosSoS`/`PysspCore`/`RprEntity` include roots
-- `scripts/generate_instance_manifest.py` — generate/check `manifests/two_instances.manifest.json`
-- `scripts/run_instance_process.py` — manifest command: prepare one bundle (`--variant` selects the pre-exported variant SSP; scenario and ports from its environment), then exec its simulation
-- `scripts/run_e2e_rpr.py` — run the federation, receive the aircraft RPR broadcasts on 5505, record truth/CSV/Rerun, summarize separation
+- `scripts/prepare_instance_bundle.py` — prepare a per-instance SSP bundle and ssp4sim config; transport defaults to unix and derives `@pysos-<variant-or-instance>` / `@pysos-recorder`, rewriting only `<Variant>Transport.ssv`; explicit UDP with no address override copies the pre-exported variant SSP byte-for-byte, while the legacy path rewrites scenario/identity/transport SSV/SSM for the baseline bundle
+- `scripts/run_instances.py` — run the instance federation through `pysos_coordinate.Federation`; the generated spec defaults to schema-2 unix (`--transport udp` is the escape hatch), `--manifest` runs whatever the manifest says
+- `scripts/entity_manifest.py` — lower/check the schema-2 unix `manifests/aircraft_federation.manifest.json` from the entity plane, resolving its `Aircraft`/`PysosSoS`/`PysspCore`/`RprEntity` include roots (`schema 1` only when the transport set selects UDP)
+- `scripts/generate_instance_manifest.py` — generate/check the schema-2 unix `manifests/two_instances.manifest.json` (`@pysos-instance-N`, `PYSOS_TRANSPORT`/`PYSOS_TELEMETRY_PATH`; `--transport udp` is the schema-1 escape hatch)
+- `scripts/run_instance_process.py` — manifest command: prepare one bundle (`--variant` selects the pre-exported variant SSP; scenario and transport endpoints from its environment, unix by default), then exec its simulation
+- `scripts/run_e2e_rpr.py` — run the federation, receive the aircraft RPR broadcasts over unix datagram sockets by default (`--transport udp` uses 5505), record truth/CSV/Rerun, summarize separation
 - `scripts/replay_web.sh` — replay a truth log in the Rerun web viewer (Chrome with SwiftShader WebGL2, streamed live so it animates)
 - `scripts/stream_truth_rerun.py` — stream a truth log into a running Rerun viewer at realtime pace
 - `scripts/render_replay_rrd.py` — build a lightweight `.rrd` from a truth log (short trails) for software rendering
 - `sos/aircraft_federation.sysml` — entity plane and source of truth for the four aircraft variants; it imports the real `Aircraft` model and the shared `PysosSoS::LaunchSpec`, defines the variant `ParameterSet` sets (Scenario/Identity/Transport), the applications and the participants, and is lowered by `scripts/entity_manifest.py` (check with `scripts/entity_manifest.py --check`)
-- `sos/federation_system.sysml` — system plane: frame, timing, the four entity-plane participants imported by type and order from `sos/aircraft_federation.sysml`, host processes (recorder, viewer, builder), the four RPR broadcast flows and artifacts (SysML v2, lowered by `pycps_sysml2`)
+- `sos/federation_system.sysml` — system plane: frame, timing, the four entity-plane participants imported by type and order from `sos/aircraft_federation.sysml`, host processes (recorder on `@pysos-recorder` via `rprPath`, viewer, builder), the four RPR broadcast flows and artifacts (SysML v2, lowered by `pycps_sysml`; `rprPort` stays for explicit UDP models)
 - `scripts/sos_model.py` — lower the system plane and check it against the manifest; must print `ok:` before a federation run (`--artifacts` also verifies the baseline aircraft SSPs; the variant archives are validated by `export_aircraft_variants.py`)
 - `scripts/render_showcase_movie.py` — render a showcase movie from a recorded capture (its RViz capture path has been retired)
 

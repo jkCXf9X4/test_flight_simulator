@@ -8,10 +8,11 @@ and hands it to ``pysos_coordinate.Federation``. Each instance command runs
 ``prepare_instance_bundle.py`` and then execs the simulation.
 
 The old single-scenario flags (``--instances``, ``--source-ssp``, ``--out-dir``,
-``--stop-time``, ``--realtime``, ``--python``) keep their meaning; ``--manifest``
-runs a checked-in manifest with the project interpreter substituted and
-``--stop-time`` overriding each instance's duration if given, and ``--dry-run``
-validates without launching anything.
+``--stop-time``, ``--realtime``, ``--python``) keep their meaning; the generated
+spec defaults to schema-2 unix (``--transport udp`` is the escape hatch);
+``--manifest`` runs a checked-in manifest as-is with the project interpreter
+substituted and ``--stop-time`` overriding each instance's duration if given,
+and ``--dry-run`` validates without launching anything.
 """
 
 from __future__ import annotations
@@ -48,6 +49,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--realtime", action="store_true", help="Pace instances against the wall clock.")
     parser.add_argument("--python", type=Path, default=None, help="Interpreter used for the simulations.")
     parser.add_argument("--scenario", type=Path, default=SCENARIO_PATH, help="Scenario JSON that names the federation.")
+    parser.add_argument(
+        "--transport",
+        choices=("udp", "unix"),
+        default="unix",
+        help="Generated-spec transport: unix datagram sockets (default) or UDP.",
+    )
+    parser.add_argument(
+        "--unix-prefix",
+        default="pysos",
+        help="Abstract-socket prefix for the generated unix spec (default: pysos).",
+    )
     parser.add_argument(
         "--manifest",
         type=Path,
@@ -119,6 +131,8 @@ def main(argv: list[str] | None = None) -> int:
                 stop_time=args.stop_time,
                 realtime=args.realtime,
                 scenario_path=args.scenario,
+                transport=args.transport,
+                unix_prefix=args.unix_prefix,
             )
         spec = apply_python(spec, resolve_python(args.python))
         spec.validate()

@@ -5,14 +5,16 @@ already owns:
 
 * the P2 federation manifest runner (``instance_manifest`` + ``Federation``)
   launches the manifest's ``ssp4sim`` instances; each instance's ``rpr_entity``
-  FMU binds its own local port (5510, 5512, ...) and broadcasts
-  ``rpr.v2.PhysicalEntity`` frames to the recorder on UDP 5505;
+  FMU broadcasts ``rpr.v2.PhysicalEntity`` frames to one recorder, over Unix
+  datagram sockets by default (``transport="udp"`` selects RPR UDP 5505);
 * :class:`RprTruthRecorder` subscribes that one RPR stream, unwraps the
   ``pyfmi_interop`` envelope, decodes the payload with the shared explicit
   ``RprOrigin``, and writes the recorder artifacts.
 
-The dedicated RPR port is ``5505``; it is deliberately outside the instance
-bind port range 5510-5517. The ``rpr_entity`` FMU emits one
+Unix mode allocates run-scoped abstract names (``@<prefix>-recorder`` and
+``@<prefix>-<instance>``) by default; ``unix_dir`` selects pathname sockets
+instead. UDP mode keeps the dedicated RPR port ``5505``, deliberately outside
+the instance bind port range 5510-5517. The ``rpr_entity`` FMU emits one
 ``pyfmi_interop`` v2 wire frame per sample whose payload is the
 ``rpr.v2.PhysicalEntity`` protobuf; the payload carries the entity identity, so
 all instances are distinguished on the single recorder socket. RPR has no
@@ -46,7 +48,9 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 import socket
+import stat
 import sys
 import threading
 import time
@@ -68,7 +72,7 @@ if str(REPO_ROOT) not in sys.path:
 import instance_manifest
 import run_instances
 from pyfmi_interop import wire as wire_codec
-from pysos_coordinate import Federation
+from pysos_coordinate import Endpoint, Federation
 from pysos_interop import (
     EntityKey,
     EntityState,
@@ -116,6 +120,98 @@ def _open_receiver(host: str, port: int) -> socket.socket:
         sock.close()
         raise
     return sock
+
+
+def _open_unix_receiver(address: str) -> socket.socket:
+    """Bind an ``AF_UNIX``/``SOCK_DGRAM`` receiver at *address*.
+
+    *address* is either an absolute pathname or an ``@name`` abstract name.
+    A stale pathname is unlinked only when it is still a socket; any other
+    filesystem entry is left alone and the bind is allowed to report the clash.
+    """
+
+    if not hasattr(socket, "AF_UNIX"):
+        raise RuntimeError("Unix-domain sockets are not available on this platform")
+    text = str(address)
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, _RCVBUF_BYTES)
+        if text.startswith("@"):
+            name = text[1:]
+            if not name:
+                raise ValueError("Unix abstract socket name must not be empty")
+            sock.bind(b"\0" + name.encode("utf-8"))
+        else:
+            path = Path(text)
+            try:
+                mode = path.lstat().st_mode
+            except FileNotFoundError:
+                pass
+            else:
+                if stat.S_ISSOCK(mode):
+                    path.unlink()
+            sock.bind(str(path))
+        sock.settimeout(_RECV_TIMEOUT_S)
+    except BaseException:
+        sock.close()
+        raise
+    return sock
+
+
+#: Longest sanitised prefix so ``@<prefix>-<instance>`` stays well inside the
+#: abstract-namespace limit (``sizeof(sun_path)`` - 1, typically 107 bytes).
+_UNIX_PREFIX_LIMIT = 48
+
+
+def sanitize_unix_prefix(text: str) -> str:
+    """Reduce *text* to a safe abstract-socket prefix fragment."""
+
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(text)).strip("-._")
+    return cleaned[:_UNIX_PREFIX_LIMIT] or "rpr"
+
+
+def plan_unix_addresses(
+    run_dir: Path | str,
+    instance_names: list[str] | tuple[str, ...],
+    *,
+    unix_dir: Path | str | None = None,
+    unix_prefix: str | None = None,
+) -> tuple[str, dict[str, str]]:
+    """Allocate the recorder and per-instance datagram addresses.
+
+    ``unix_dir`` selects pathname mode (``<unix-dir>/recorder.sock`` and
+    ``<unix-dir>/<instance>.sock``); otherwise abstract names are derived from
+    ``unix_prefix`` or the run directory basename.
+    """
+
+    names = [str(name) for name in instance_names]
+    if unix_dir is not None:
+        directory = Path(unix_dir).expanduser().resolve()
+        recorder = str(directory / "recorder.sock")
+        return recorder, {name: str(directory / f"{name}.sock") for name in names}
+    prefix = sanitize_unix_prefix(
+        unix_prefix if unix_prefix is not None else Path(run_dir).name
+    )
+    return f"@{prefix}-recorder", {name: f"@{prefix}-{name}" for name in names}
+
+
+def write_endpoints_json(
+    path: Path | str,
+    *,
+    recorder: str,
+    instances: Mapping[str, str],
+) -> Path:
+    """Write the unix address registry consumed by the federation tooling."""
+
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "transport": "unix",
+        "recorder": recorder,
+        "instances": dict(instances),
+    }
+    out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return out
 
 
 def _drain_burst(sock: socket.socket, first: bytes) -> list[bytes]:
@@ -240,10 +336,13 @@ class RprTruthRecorder(threading.Thread):
         run_id: str,
         sample_period_s: float = SAMPLE_PERIOD_S,
         watchdog_s: float = DEFAULT_WATCHDOG_S,
+        address: str | None = None,
     ) -> None:
         super().__init__(name="rpr-truth-recorder", daemon=True)
         self.host = host
         self.port = int(port)
+        #: Unix datagram address; takes precedence over ``host``/``port``.
+        self.address = str(address) if address is not None else None
         self.origin = origin
         self.expected_keys = dict(expected_keys)
         self.truth_path = Path(truth_path)
@@ -260,6 +359,8 @@ class RprTruthRecorder(threading.Thread):
         self.decode_errors = 0
         #: Actual bound UDP port (useful when constructed with ``port=0``).
         self.bound_port: int | None = None
+        #: Bound unix address in unix transport mode.
+        self.bound_address: str | None = None
         self.recorder: TruthRecorder | None = None
         self.fan_in = SampleFanIn(
             self.expected_keys,
@@ -279,8 +380,12 @@ class RprTruthRecorder(threading.Thread):
     def run(self) -> None:  # pragma: no cover - exercised end to end
         receiver: socket.socket | None = None
         try:
-            receiver = _open_receiver(self.host, self.port)
-            self.bound_port = int(receiver.getsockname()[1])
+            if self.address is not None:
+                receiver = _open_unix_receiver(self.address)
+                self.bound_address = self.address
+            else:
+                receiver = _open_receiver(self.host, self.port)
+                self.bound_port = int(receiver.getsockname()[1])
             self.recorder = TruthRecorder(
                 self.truth_path,
                 run_id=self.run_id,
@@ -360,6 +465,9 @@ class E2EResult:
     recorder: dict[str, Any] = field(default_factory=dict)
     #: Kernel UDP counter delta observed across the run.
     kernel_udp: dict[str, int] = field(default_factory=dict)
+    transport: str = "unix"
+    recorder_address: str | None = None
+    instance_addresses: dict[str, str] = field(default_factory=dict)
 
 
 def _set_option(command: list[str], flag: str, value: str) -> None:
@@ -369,16 +477,136 @@ def _set_option(command: list[str], flag: str, value: str) -> None:
         command += [flag, value]
 
 
-def _retarget(spec, *, out_dir: Path, stop_time: float, realtime: bool):
+def _manifest_udp_port(instance) -> int | None:
+    """Return the instance's declared UDP telemetry port, if it has one."""
+
+    for endpoint in instance.telemetry or ():
+        if endpoint.transport == "udp" and endpoint.port is not None:
+            return int(endpoint.port)
+    return None
+
+
+def _free_udp_ports(
+    count: int,
+    *,
+    excluded: set[int],
+    attempts: int = 200,
+) -> list[int]:
+    """Bind real loopback UDP sockets to pick *count* distinct free ports.
+
+    Binding ``127.0.0.1:0`` lets the kernel choose; the sockets stay held until
+    all ports are chosen so two picks cannot collide. They are then released so
+    the instances can bind them.
+    """
+
+    if count < 0:
+        raise ValueError(f"port count must be >= 0, got {count}")
+    ports: list[int] = []
+    held: list[socket.socket] = []
+    try:
+        for _ in range(attempts):
+            if len(ports) == count:
+                break
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                sock.bind(("127.0.0.1", 0))
+                port = int(sock.getsockname()[1])
+            except OSError as exc:
+                sock.close()
+                raise RuntimeError(f"could not probe a free UDP port: {exc}") from exc
+            if port in excluded or port in ports:
+                sock.close()
+                continue
+            ports.append(port)
+            held.append(sock)
+    finally:
+        for sock in held:
+            sock.close()
+    if len(ports) != count:
+        raise RuntimeError(
+            f"could not find {count} free UDP port(s) after {attempts} probes "
+            f"excluding {sorted(excluded)}"
+        )
+    return ports
+
+
+def _retarget(
+    spec,
+    *,
+    out_dir: Path,
+    stop_time: float,
+    realtime: bool,
+    transport: str = "unix",
+    recorder_address: str | None = None,
+    instance_addresses: Mapping[str, str] | None = None,
+    rpr_port: int = RPR_UDP_PORT,
+):
     """Point a loaded manifest at the run directory and the fixed duration."""
 
-    for instance in spec.instances:
+    udp_ports: dict[str, int] = {}
+    if transport == "udp":
+        # An instance whose manifest endpoint is already UDP keeps its declared
+        # addresses. A unix (or portless) manifest is rewritten to fresh UDP
+        # ports so the explicit escape hatch actually reaches the recorder.
+        pending = [
+            instance
+            for instance in spec.instances
+            if _manifest_udp_port(instance) is None
+        ]
+        excluded = {int(rpr_port)}
+        excluded.update(
+            port
+            for port in (
+                _manifest_udp_port(instance) for instance in spec.instances
+            )
+            if port is not None
+        )
+        udp_ports = dict(
+            zip(
+                (instance.name for instance in pending),
+                _free_udp_ports(len(pending), excluded=excluded),
+                strict=True,
+            )
+        )
+
+    for index, instance in enumerate(spec.instances, start=1):
         command = list(instance.command)
         _set_option(command, "--out-dir", str(out_dir))
         if stop_time is not None:
             _set_option(command, "--stop-time", str(float(stop_time)))
         if realtime and "--realtime" not in command:
             command.append("--realtime")
+        if transport == "unix":
+            address = (instance_addresses or {}).get(instance.name)
+            if address is None or recorder_address is None:
+                raise ValueError(
+                    f"{instance.name}: no unix address planned for the instance"
+                )
+            _set_option(command, "--transport", "unix")
+            _set_option(command, "--bind-address", address)
+            _set_option(command, "--peer-address", recorder_address)
+            # Keep the manifest environment consistent with the run-scoped
+            # command override instead of a stale generated default.
+            env = dict(instance.env)
+            env["PYSOS_TRANSPORT"] = "unix"
+            env["PYSOS_TELEMETRY_PATH"] = address
+            env.pop("PYSOS_TELEMETRY_PORT", None)
+            instance.env = env
+        elif transport == "udp" and instance.name in udp_ports:
+            port = udp_ports[instance.name]
+            bind_address = f"127.0.0.1:{port}"
+            _set_option(command, "--transport", "udp")
+            _set_option(command, "--bind-address", bind_address)
+            _set_option(command, "--peer-address", f"127.0.0.1:{int(rpr_port)}")
+            # The port is no longer the index source, so name the instance.
+            _set_option(command, "--instance", str(index))
+            env = dict(instance.env)
+            env["PYSOS_TRANSPORT"] = "udp"
+            env["PYSOS_TELEMETRY_PORT"] = str(port)
+            env.pop("PYSOS_TELEMETRY_PATH", None)
+            instance.env = env
+            # Keep run.json's port report true to the rewritten endpoint.
+            instance.telemetry = [Endpoint.udp(port)]
         instance.command = command
     return spec.validate()
 
@@ -649,10 +877,19 @@ def run_e2e(
     python: Path | str | None = None,
     rpr_port: int = RPR_UDP_PORT,
     realtime: bool = False,
+    transport: str = "unix",
+    unix_dir: Path | str | None = None,
+    unix_prefix: str | None = None,
     log: Any = print,
 ) -> E2EResult:
-    """Run an N-instance federation through the RPR broadcaster/recorder path."""
+    """Run an N-instance federation through the RPR broadcaster/recorder path.
 
+    ``transport="unix"`` is the default; there is no silent fallback to UDP when
+    a Unix bind fails. ``transport="udp"`` is the explicit escape hatch.
+    """
+
+    if transport not in ("udp", "unix"):
+        raise ValueError(f"unsupported RPR transport: {transport!r}")
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     instances_dir = run_dir / "instances"
@@ -662,7 +899,6 @@ def run_e2e(
 
     if manifest_path is not None:
         spec = instance_manifest.load_spec(manifest_path)
-        spec = _retarget(spec, out_dir=instances_dir, stop_time=stop_time, realtime=realtime)
     else:
         spec = instance_manifest.build_spec(
             instances=instances,
@@ -671,7 +907,42 @@ def run_e2e(
             stop_time=stop_time,
             realtime=realtime,
             scenario_path=scenario_path,
+            transport=transport,
         )
+
+    recorder_address: str | None = None
+    instance_addresses: dict[str, str] = {}
+    if transport == "unix":
+        recorder_address, instance_addresses = plan_unix_addresses(
+            run_dir,
+            [instance.name for instance in spec.instances],
+            unix_dir=unix_dir,
+            unix_prefix=unix_prefix,
+        )
+        if unix_dir is not None:
+            Path(unix_dir).expanduser().resolve().mkdir(parents=True, exist_ok=True)
+        if recorder_address is None:  # pragma: no cover - plan always allocates
+            raise RuntimeError("unix transport planned no recorder address")
+        write_endpoints_json(
+            run_dir / "endpoints.json",
+            recorder=recorder_address,
+            instances=instance_addresses,
+        )
+    # ``build_spec`` already applies the run directory, stop time and realtime
+    # flags; its UDP spelling is left alone by ``_retarget`` because those
+    # endpoints are already UDP. Manifests and the unix default still need the
+    # run-scoped sender flags, and explicit UDP over a unix manifest needs the
+    # full UDP rewrite.
+    spec = _retarget(
+        spec,
+        out_dir=instances_dir,
+        stop_time=stop_time,
+        realtime=realtime,
+        transport=transport,
+        recorder_address=recorder_address,
+        instance_addresses=instance_addresses,
+        rpr_port=rpr_port,
+    )
     spec = run_instances.apply_python(spec, interpreter)
 
     expected: dict[str, EntityKey] = {}
@@ -697,8 +968,9 @@ def run_e2e(
             "marking": ref.marking,
             "label": label,
         }
-        if instance.telemetry:
-            instance_bind_ports[instance.name] = int(instance.telemetry[0].port)
+        endpoint = instance.telemetry[0] if instance.telemetry else None
+        if endpoint is not None and endpoint.port is not None:
+            instance_bind_ports[instance.name] = int(endpoint.port)
 
     colors = {
         slug: _ENTITY_COLORS[index % len(_ENTITY_COLORS)]
@@ -714,20 +986,25 @@ def run_e2e(
 
     recorder = RprTruthRecorder(
         host="127.0.0.1",
-        port=rpr_port,
+        port=0 if transport == "unix" else rpr_port,
+        address=recorder_address,
         origin=origin,
         expected_keys=expected,
         truth_path=truth_path,
         run_id=run_id,
     )
-    kernel_before = _udp_kernel_counters()
+    kernel_before = _udp_kernel_counters() if transport == "udp" else {}
     recorder.start()
     if not recorder.ready.wait(timeout=5.0):
-        raise RuntimeError("RPR recorder did not bind the RPR port")
+        target = recorder_address if transport == "unix" else f"UDP {rpr_port}"
+        raise RuntimeError(f"RPR recorder did not bind {target}")
     if recorder.error is not None:
         raise RuntimeError(f"RPR recorder failed to start: {recorder.error}")
 
-    log(f"federation {spec.name}: {len(spec.instances)} instances, stop {stop_time}s, origin {origin}")
+    log(
+        f"federation {spec.name}: {len(spec.instances)} instances, "
+        f"transport {transport}, stop {stop_time}s, origin {origin}"
+    )
     federation = Federation(spec, log_dir=logs_dir)
     try:
         result = federation.run()
@@ -735,7 +1012,7 @@ def run_e2e(
         recorder.stop_event.set()
         recorder.join(timeout=20.0)
 
-    kernel_after = _udp_kernel_counters()
+    kernel_after = _udp_kernel_counters() if transport == "udp" else {}
     kernel_udp: dict[str, int] = {}
     if kernel_before and kernel_after:
         kernel_udp = {
@@ -752,7 +1029,10 @@ def run_e2e(
         "error": repr(recorder.error) if recorder.error is not None else None,
         "error_traceback": recorder.error_traceback or None,
     }
-    transport = {
+    transport_block = {
+        "mode": transport,
+        "recorder_address": recorder_address,
+        "instance_addresses": dict(instance_addresses),
         "recorder": recorder_stats,
         "kernel_udp": kernel_udp,
     }
@@ -770,23 +1050,22 @@ def run_e2e(
             f"(instance exit codes: {dict(result.exit_codes)}); see {logs_dir}"
         )
     if thread_failures:
+        failure = {
+            "schema": 1,
+            "run_id": run_id,
+            "federation": spec.name,
+            "stop_time_s": float(stop_time),
+            "realtime": bool(realtime),
+            "exit_codes": dict(result.exit_codes),
+            "timed_out": bool(result.timed_out),
+            "transport": transport_block,
+            "errors": thread_failures,
+        }
+        if transport == "unix":
+            failure["recorder_address"] = recorder_address
+            failure["instance_addresses"] = dict(instance_addresses)
         (run_dir / "run.json").write_text(
-            json.dumps(
-                {
-                    "schema": 1,
-                    "run_id": run_id,
-                    "federation": spec.name,
-                    "stop_time_s": float(stop_time),
-                    "realtime": bool(realtime),
-                    "exit_codes": dict(result.exit_codes),
-                    "timed_out": bool(result.timed_out),
-                    "transport": transport,
-                    "errors": thread_failures,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
+            json.dumps(failure, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
         raise RuntimeError("\n".join(thread_failures))
@@ -837,8 +1116,24 @@ def run_e2e(
         partial_samples=int(recorder.fan_in.partial_samples),
         recorder=recorder_stats,
         kernel_udp=kernel_udp,
+        transport=transport,
+        recorder_address=recorder_address,
+        instance_addresses=dict(instance_addresses),
     )
 
+    if transport == "unix":
+        ports_summary: dict[str, Any] = {}
+        transport_summary: dict[str, Any] = dict(transport_block)
+    else:
+        ports_summary = {
+            "instance_bind": instance_bind_ports,
+            "rpr": rpr_port,
+        }
+        transport_summary = {
+            "mode": transport,
+            "recorder": e2e.recorder,
+            "kernel_udp": e2e.kernel_udp,
+        }
     summary = {
         "schema": 1,
         "run_id": run_id,
@@ -850,19 +1145,13 @@ def run_e2e(
             "longitude_deg": origin.longitude_deg,
             "altitude_m": origin.altitude_m,
         },
-        "ports": {
-            "instance_bind": instance_bind_ports,
-            "rpr": rpr_port,
-        },
+        "ports": ports_summary,
         "exit_codes": e2e.exit_codes,
         "timed_out": e2e.timed_out,
         "frames": e2e.frames,
         "samples": e2e.samples,
         "partial_samples": e2e.partial_samples,
-        "transport": {
-            "recorder": e2e.recorder,
-            "kernel_udp": e2e.kernel_udp,
-        },
+        "transport": transport_summary,
         "instance_sim_durations_s": e2e.instance_sim_durations,
         "entities": e2e.entities,
         "pairs": e2e.pairs,
@@ -877,6 +1166,13 @@ def run_e2e(
         },
         "pyssp_vv_comparison": comparison,
     }
+    if transport == "unix":
+        summary["recorder_address"] = recorder_address
+        summary["instance_addresses"] = dict(instance_addresses)
+        summary["transport_note"] = (
+            "unix endpoints carry no IP ports; the recorder and instances use "
+            "the socket addresses recorded here"
+        )
     e2e.run_json.write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )

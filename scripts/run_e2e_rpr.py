@@ -2,10 +2,11 @@
 """Run the two-instance airplane scenario through the end-to-end RPR path.
 
 Launches the P2 federation manifest, lets each instance's ``rpr_entity`` FMU
-broadcast ``rpr.v2.PhysicalEntity`` frames to the recorder on UDP 5505, records
-the decoded stream, and writes the truth JSONL, metadata sidecar, measurement
-CSV and ``.rrd`` under one run directory. See ``scripts/rpr_e2e.py`` for the
-component wiring and the artifact layout.
+broadcast ``rpr.v2.PhysicalEntity`` frames to a Unix datagram recorder by
+default (``--transport udp`` selects RPR UDP 5505), records the decoded stream,
+and writes the truth JSONL, metadata sidecar, measurement CSV and ``.rrd`` under
+one run directory. See ``scripts/rpr_e2e.py`` for the component wiring and the
+artifact layout.
 """
 
 from __future__ import annotations
@@ -62,6 +63,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--rpr-port", type=int, default=rpr_e2e.RPR_UDP_PORT, help="Dedicated RPR UDP port."
     )
+    parser.add_argument(
+        "--transport",
+        choices=("udp", "unix"),
+        default="unix",
+        help="Recorder transport: Unix datagram sockets (default) or UDP.",
+    )
+    parser.add_argument(
+        "--unix-dir",
+        type=Path,
+        default=None,
+        help="Bind unix sockets as pathnames under this directory (pathname mode).",
+    )
+    parser.add_argument(
+        "--unix-prefix",
+        default=None,
+        help="Abstract-socket prefix (default: sanitised run directory basename).",
+    )
     parser.add_argument("--realtime", action="store_true", help="Pace instances against the wall clock.")
     return parser.parse_args(argv)
 
@@ -82,9 +100,15 @@ def main(argv: list[str] | None = None) -> int:
         python=args.python,
         rpr_port=args.rpr_port,
         realtime=args.realtime,
+        transport=args.transport,
+        unix_dir=args.unix_dir,
+        unix_prefix=args.unix_prefix,
     )
 
     print(f"run: {result.run_dir}")
+    print(f"  transport    {result.transport}")
+    if result.recorder_address is not None:
+        print(f"  recorder     {result.recorder_address}")
     for name, path in (
         ("truth", result.truth_jsonl),
         ("metadata", result.metadata_json),

@@ -40,7 +40,7 @@ What the build now does inside `3rd_party/airplane`:
 
 ## RPR broadcast and viewer replay
 
-The supported live visualization is ROS-free and one-way. `ssp4sim` stays on the host, every aircraft broadcasts RPR entity-state packets to the recorder on UDP 5505, and `flight_viewer` replays the recorder's truth stream with Rerun. There is no live JSON telemetry/control socket and no pilot shim.
+The supported live visualization is ROS-free and one-way. `ssp4sim` stays on the host, every aircraft broadcasts RPR entity-state packets to the recorder over Unix datagram sockets by default (`TRANSPORT=udp` keeps the legacy UDP 5505 path), and `flight_viewer` replays the recorder's truth stream with Rerun. There is no live JSON telemetry/control socket and no pilot shim.
 
 ```bash
 # Host viewer, repo venv (default)
@@ -66,13 +66,78 @@ The earlier RViz runtime has been retired and replaced by the Rerun viewer. Use 
 
 ## RPR broadcast path
 
-The aircraft carries two native FMI 2.0 co-simulation FMUs: `rpr_state_source` projects the aircraft state onto the RPR entity-state vocabulary, and `rpr_entity` encodes and sends it. Deployment is initialization configuration:
+The aircraft carries two native FMI 2.0 co-simulation FMUs: `rpr_state_source` projects the aircraft state onto the RPR entity-state vocabulary, and `rpr_entity` encodes and sends it. Deployment is initialization configuration. The exported variant SSPs carry the
+unix triple:
 
-- `rpr_entity.transport` is `udp`;
-- `rpr_entity.bind_address` is the instance endpoint (5510, 5512, 5514, 5516);
-- `rpr_entity.peer_address` is the recorder at `127.0.0.1:5505`.
+- `rpr_entity.transport` is `unix` in the exported variants;
+- `rpr_entity.bind_address` is the variant socket (`@pysos-red-interceptor`,
+  `@pysos-red-striker`, `@pysos-blue-cas`, `@pysos-blue-baseline`);
+- `rpr_entity.peer_address` is the recorder at `@pysos-recorder`.
 
-Each instance publishes one-way at 10 Hz and never opens another instance's port. The recorder (`RprTruthRecorder` in `scripts/run_e2e_rpr.py`) binds 5505, decodes the RPR payloads, and writes `truth.jsonl`, `truth.meta.json`, `measurements.csv` and `recording.rrd`. There is no inbound control channel.
+Those are the SSP defaults, and the runtime scripts use them directly. An
+explicit UDP selection overrides the triple; the next subsection shows the
+run-time sender override.
+
+Each instance publishes one-way at 10 Hz and never opens another instance's port. The recorder (`RprTruthRecorder` in `scripts/rpr_e2e.py`) binds the run's recorder endpoint (unix by default, UDP 5505 with `--transport udp`), decodes the RPR payloads, and writes `truth.jsonl`, `truth.meta.json`, `measurements.csv` and `recording.rrd`. There is no inbound control channel.
+
+### Selecting the transport at run time (sender side)
+
+`run_instance_process.py` and `prepare_instance_bundle.py` accept the same three
+flags; `run_instance_process.py` forwards them to the bundle preparer:
+
+```
+--transport {udp,unix}     default: unix
+--bind-address <addr>      RPR bind endpoint / local socket
+--peer-address <addr>      RPR send target / recorder socket
+```
+
+Addresses are bare values: `/absolute/path.sock` or `@abstract-name`, with no
+`unix://` scheme and no relative pathname. The unix default derives `bind_address`
+as `@pysos-<variant-or-instance>` (or `@pysos-instance-<N>` from `--instance`)
+and `peer_address` as `@pysos-recorder`. UDP remains the escape hatch and keeps
+its existing behaviour: `bind_address` defaults to
+`127.0.0.1:(5510 + 2*(index-1))` and `peer_address` to `127.0.0.1:5505`.
+
+Resolution order is explicit flags > environment > manifest/SSP. When no flags
+are passed, the same two scripts read the lowered environment: `PYSOS_TRANSPORT`,
+`PYSOS_TELEMETRY_PATH` as the unix bind address, and `PYSOS_CONTROL_PATH` as the
+unix peer when a control endpoint exists. A lowered `PYSOS_TELEMETRY_PORT`
+selects the UDP manifest path, so a schema-1 UDP manifest keeps working; with no
+transport environment at all, unix is the default. A failed unix bind is an
+error and never falls back to UDP.
+
+### Schema-2 unix endpoints in a manifest
+
+A schema-2 manifest can declare unix endpoints directly, so a SysML-declared
+unix transport no longer needs the run-time overlay:
+
+```json
+{"schema": 2,
+ "instances": [{"telemetry": [{"transport": "unix", "path": "/abs/x.sock"}],
+                "env": {"PYSOS_TRANSPORT": "unix",
+                        "PYSOS_TELEMETRY_PATH": "/abs/x.sock"}}]}
+```
+
+UDP endpoints stay exactly `{"host": "...", "port": N}` and schema 1 stays
+UDP-only. The lowered unix environment carries `PYSOS_TRANSPORT` and
+`PYSOS_TELEMETRY_PATH`, plus `PYSOS_CONTROL_PATH` when a control endpoint
+exists; there are no telemetry/control ports. `scripts/instance_manifest.py`
+now defaults to this form (schema 2, `@<unix-prefix>-instance-<N>` with the
+prefix defaulting to `pysos`); `unix_dir=...` selects pathname sockets and
+`transport="udp"` reproduces the schema-1 JSON byte-for-byte. The checked-in
+`two_instances`/`aircraft_federation` manifests are schema 2 unix, regenerated
+from the flipped system definition.
+
+With `--transport unix`, the instance has no IP port to derive its index from.
+Pass `--instance N` explicitly when identity defaults matter; otherwise (with
+`--variant`) the bundle is named `instance-<address>` from `--bind-address`.
+Both addresses are required. The variant archive is then no longer copied
+verbatim: the preparer rewrites only
+`resources/parameter_sets/<Variant>Transport.ssv` (`transport`,
+`bind_address`, `peer_address`) inside the per-instance copy, leaving every
+other member and the SSD mapping byte-identical. The UDP no-override case keeps
+the byte-for-byte fast path. The legacy baseline path applies the same triple to
+its rewritten `resources/MissionScenario.ssv`.
 
 Containerized viewer behavior:
 
@@ -137,8 +202,9 @@ They are generated, not hand-edited:
 
 ```bash
 PY=/home/eriro/pwa/2_work/flight_sim/venv/bin/python3
-$PY scripts/generate_instance_manifest.py           # rewrite the two-instance manifest
+$PY scripts/generate_instance_manifest.py           # rewrite the two-instance manifest (schema-2 unix)
 $PY scripts/generate_instance_manifest.py --check   # fail if it is stale
+$PY scripts/generate_instance_manifest.py --transport udp  # opt into schema-1 UDP
 $PY scripts/entity_manifest.py --check  # fail if the entity manifest is stale
 ```
 
@@ -146,8 +212,8 @@ The system-of-systems model has two planes: the entity plane
 (`sos/aircraft_federation.sysml`, lowered to the manifest) and the system plane
 (`sos/federation_system.sysml`, lowered by `scripts/sos_model.py`). The system
 plane owns the shared frame and origin, the timing contract, the host-side
-participants (orchestrator/recorder on RPR 5505, viewer replaying the truth
-stream, builder), the RPR broadcast flow and the run artifacts. `scripts/sos_model.py` must print `ok:` before a federation
+participants (orchestrator/recorder on `@pysos-recorder`, viewer replaying the
+truth stream, builder), the RPR broadcast flow and the run artifacts. `scripts/sos_model.py` must print `ok:` before a federation
 run, and `scripts/sos_model.py --artifacts` after a build to prove the fresh
 SSPs still match the modelled aircraft; see `docs/sos_model.md`.
 
@@ -165,13 +231,15 @@ validated spec to `pysos_coordinate.Federation`; the project keeps no process
 supervisor of its own. Per-instance preparation stays in
 `scripts/prepare_instance_bundle.py`, wired as the manifest `command` through
 `scripts/run_instance_process.py`: `--variant` copies the pre-exported variant
-SSP byte-for-byte and writes only the ssp4sim config, then the wrapper `exec`s
-the run, so the supervised process is the simulation itself. The legacy
-baseline rewrite path remains for standalone airplane runs.
+SSP byte-for-byte (unless a transport override rewrites only its Transport
+parameter set) and writes the ssp4sim config, then the wrapper `exec`s the run,
+so the supervised process is the simulation itself. The legacy baseline rewrite
+path remains for standalone airplane runs.
 
 ```bash
 $PY scripts/run_instances.py --dry-run           # validate, launch nothing
-$PY scripts/run_instances.py --instances 2 --stop-time 60
+$PY scripts/run_instances.py --instances 2 --stop-time 60   # schema-2 unix default
+$PY scripts/run_instances.py --transport udp --instances 2  # UDP escape hatch
 $PY scripts/run_instances.py --manifest manifests/two_instances.manifest.json
 $PY scripts/run_instances.py --manifest manifests/aircraft_federation.manifest.json
 ```
@@ -184,15 +252,20 @@ the project interpreter substituted for the portable `python3` in `command`.
 
 ### Ports
 
+Runtime defaults are unix datagram sockets, so no IP port is claimed unless the
+explicit UDP escape hatch is selected. The UDP plan is:
+
 | purpose | ports | notes |
 | --- | --- | --- |
 | instance RPR bind | `5510 + 2*(index-1)` | 5510, 5512, 5514, 5516 for four instances |
 | RPR fan-in | **5505** | dedicated recorder port, never an instance port |
 
 The old `5501` plan is retired; it collided with RPR `5505` at instance 3.
-The manifest has no control endpoint and no `PYSOS_CONTROL_PORT`: the listener
-port is `Orchestrator.rprPort`, and each variant's transport set owns its bind
-address.
+The default manifest has no control endpoint and no `PYSOS_CONTROL_PORT`: the
+listener port is `Orchestrator.rprPort`, and each variant's transport set owns
+its bind address. A schema-2 unix manifest claims no ports at all; it declares
+`{"transport": "unix", "path": ...}` endpoints and the producer reads
+`PYSOS_TELEMETRY_PATH` / `PYSOS_CONTROL_PATH`.
 
 | instance | RPR bind | init offset (north, east) |
 | --- | --- | --- |
@@ -225,46 +298,63 @@ The scenario is selected by the variant, not by rewriting a shared SSV:
    `waypointX/Y/Z_km[1..10]`, `waypointCount`, `targetAirspeed_mps`, and
    `waypointProximity_km`; the SSD carries the inline mappings.
 3. `scripts/entity_manifest.py` lowers the application `scenario` name to
-   `env.PYSOS_SCENARIO` for labels, alongside `PYSOS_TELEMETRY_PORT` and the
+   `env.PYSOS_SCENARIO` for labels, alongside `PYSOS_TELEMETRY_PORT` (UDP) or
+   `PYSOS_TRANSPORT=unix` + `PYSOS_TELEMETRY_PATH` (`PYSOS_CONTROL_PATH` when a
+   control endpoint exists), and the
    `PYSOS_LAUNCH_MODE`/`PYSOS_READINESS`/`PYSOS_LAUNCH_ORDER`/
    `PYSOS_AFTER_PROCESS` keys from the shared `PysosSoS::LaunchSpec`.
 4. `scripts/run_instance_process.py --variant` selects the archive. When
    `--instance` is omitted, it derives the 1-based index from
-   `PYSOS_TELEMETRY_PORT`.
+   `PYSOS_TELEMETRY_PORT` for a UDP manifest; with unix (the default) it names
+   the bundle from `PYSOS_TELEMETRY_PATH`/`--bind-address`, or from the
+   deterministic `@pysos-<variant>` default.
 5. `scripts/prepare_instance_bundle.py --variant` copies the archive
-   byte-for-byte and writes the ssp4sim config. The legacy baseline path still
-   converts a JSON scenario and rewrites `resources/MissionScenario.ssv` for
-   standalone runs.
+   byte-for-byte only for explicit UDP with no address override; the unix
+   default rewrites just `<Variant>Transport.ssv` (transport/bind/peer) and
+   writes the ssp4sim config. The legacy baseline path still converts a JSON
+   scenario and rewrites `resources/MissionScenario.ssv` for standalone runs.
 
 Aircraft are peerless: every instance only broadcasts its own RPR state from
 its own bind port. No instance opens another instance's port or ingests another
-instance's state; only the single recorder on UDP 5505 fans the streams in.
+instance's state; only the single recorder endpoint (unix by default, UDP 5505
+with `--transport udp`) fans the streams in.
 
 ## End-to-end RPR acceptance run
 
 `scripts/run_e2e_rpr.py` composes the whole stack for a fixed simulated
 duration. It launches every instance in the selected manifest through
-`pysos_coordinate.Federation` and binds the recorder to the dedicated RPR port
-**5505**. The aircraft broadcast RPR themselves; the recorder decodes the
-payloads with the scenario's explicit `RprOrigin` (`points[0]`) and writes the
-recorder artifacts. It adds no library code to `pyssp_dev`.
+`pysos_coordinate.Federation` and binds the recorder to a unix datagram socket
+by default (`--transport udp` selects the dedicated RPR port **5505**). The
+aircraft broadcast RPR themselves; the recorder decodes the payloads with the
+scenario's explicit `RprOrigin` (`points[0]`) and writes the recorder
+artifacts. It adds no library code to `pyssp_dev`.
 
 ```bash
 PY=/home/eriro/pwa/2_work/flight_sim/venv/bin/python3
 
-# Fixed 6 s two-instance run; origin from the scenario, artifacts under build/runs/
+# Fixed 6 s two-instance run over unix datagram sockets (default); origin from
+# the scenario, artifacts under build/runs/
 $PY scripts/run_e2e_rpr.py --stop-time 6 --run-dir build/runs/e2e
 
-# Same path against the generated manifest (retargeted to the run directory)
+# Same path against the generated UDP manifest (retargeted to unix by default)
 $PY scripts/run_e2e_rpr.py --manifest manifests/two_instances.manifest.json \
     --stop-time 6 --run-dir build/runs/e2e-manifest
 
-# Four aircraft, four scenarios (N comes from the SoS manifest)
+# Four aircraft, four scenarios (N comes from the SoS manifest), UDP escape hatch
 $PY scripts/run_e2e_rpr.py --manifest manifests/aircraft_federation.manifest.json \
-    --stop-time 3 --run-dir build/runs/sos4
+    --transport udp --stop-time 3 --run-dir build/runs/sos4
 
 # Without a manifest, --instances N builds the default scenario N times
 $PY scripts/run_e2e_rpr.py --instances 2
+
+# Unix is the default: abstract names (@<prefix>-recorder, @<prefix>-<instance>)
+# are allocated from the run-directory basename; pass --unix-dir for pathname
+# sockets, --unix-prefix to override the abstract prefix, or --transport udp
+# for the legacy UDP path.
+$PY scripts/run_e2e_rpr.py --instances 2 --run-dir build/runs/e2e-uds
+$PY scripts/run_e2e_rpr.py --unix-dir build/runs/e2e-uds/sockets \
+    --unix-prefix e2e --run-dir build/runs/e2e-uds
+$PY scripts/run_e2e_rpr.py --transport udp --instances 2 --run-dir build/runs/e2e-udp
 
 # Omitted --stop-time falls back to rpr_e2e.DEFAULT_STOP_TIME_S (6 s), not the
 # SoS Timing duration. For the full aircraft federation pass its 120 s explicitly:
@@ -278,11 +368,25 @@ $PY -m rerun rrd verify build/runs/e2e/recording.rrd
 $PY -m pytest tests/test_e2e_rpr.py -q
 ```
 
+Unix is the default: the recorder binds `<unix-dir>/recorder.sock` or the
+abstract name `@<prefix>-recorder`, and each instance is retargeted with
+`--transport unix --bind-address <instance-addr> --peer-address <recorder-addr>`.
+`run.json` then carries `transport.mode = "unix"`, `recorder_address`,
+`instance_addresses`, an empty `ports` block, and `endpoints.json` records the
+same addresses. The e2e overlay starts from either a generated schema-2 unix
+spec or an IP-shaped schema-1 manifest and retargets each instance command; it
+does not rewrite the manifest to schema 2. `--transport udp` keeps the legacy
+UDP recorder (5505) and the `ports`/kernel-counter report. A schema-2 manifest
+that declares unix endpoints is accepted by `pysos_coordinate.FederationSpec`
+and `scripts/run_instances.py` directly, with no ports to ignore and no
+`transport_note`.
+
 Run directory layout (`build/runs/e2e/`):
 
 | path | content |
 | --- | --- |
 | `run.json` | scenario, origin, ports, exit codes, sample counts, per-entity path lengths, per-pair separation, and `pyssp_vv` comparison |
+| `endpoints.json` | unix transport only: `{"transport","recorder","instances"}` address registry |
 | `truth.jsonl` | `pysos_interop.TruthRecorder` truth stream, one row per entity per sample |
 | `truth.meta.json` | metadata sidecar: run id, origin, entity catalogue, 10 Hz rate, units |
 | `measurements.csv` | `pysos_interop.export_measure_csv` table, `<site>_<app>_<entity>.<channel>` columns |

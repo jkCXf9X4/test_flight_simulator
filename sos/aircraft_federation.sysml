@@ -13,7 +13,7 @@
 // Scenario, identity and transport values live in the variant sets only; there
 // is no second copy on a participant. Each full variant set is exported to
 // `build/ssp/variants/<Variant>.ssp`, e.g.
-// `pyssp_sysml2.generate_ssp(..., composition="RedInterceptor")`.
+// `pyssp_sysml.generate_ssp(..., composition="RedInterceptor")`.
 package AircraftFederation {
   private import Aircraft::*;
   private import PysosSoS::*;
@@ -30,7 +30,7 @@ package AircraftFederation {
 
   // -- 1. aircraft variant: the real model, as an exportable root ----------
   // The variant adds no attributes: only binds and recognisable metadata.
-  // `pyssp_sysml2` projects the inherited components, ports, FMU metadata and
+  // `pyssp_sysml` projects the inherited components, ports, FMU metadata and
   // connections. Build metadata is inherited; do not set `ssp_meta`, and do
   // not restate the FMU source per variant.
   part def AircraftVariant :> AircraftModel;
@@ -62,9 +62,9 @@ package AircraftFederation {
 
   // Transport deployment: `rpr_entity.parameters` (RprDeployment).
   attribute def RedInterceptorTransport :> ParameterSet {
-    attribute transport : String = "udp";
-    attribute bind_address : String = "127.0.0.1:5510";
-    attribute peer_address : String = "127.0.0.1:5505";
+    attribute transport : String = "unix";
+    attribute bind_address : String = "@pysos-red-interceptor";
+    attribute peer_address : String = "@pysos-recorder";
   }
 
   // Scenario values (environment + autopilot).
@@ -93,9 +93,9 @@ package AircraftFederation {
 
   // Transport deployment: `rpr_entity.parameters` (RprDeployment).
   attribute def RedStrikerTransport :> ParameterSet {
-    attribute transport : String = "udp";
-    attribute bind_address : String = "127.0.0.1:5512";
-    attribute peer_address : String = "127.0.0.1:5505";
+    attribute transport : String = "unix";
+    attribute bind_address : String = "@pysos-red-striker";
+    attribute peer_address : String = "@pysos-recorder";
   }
 
   // Scenario values (environment + autopilot).
@@ -124,9 +124,9 @@ package AircraftFederation {
 
   // Transport deployment: `rpr_entity.parameters` (RprDeployment).
   attribute def BlueCasTransport :> ParameterSet {
-    attribute transport : String = "udp";
-    attribute bind_address : String = "127.0.0.1:5514";
-    attribute peer_address : String = "127.0.0.1:5505";
+    attribute transport : String = "unix";
+    attribute bind_address : String = "@pysos-blue-cas";
+    attribute peer_address : String = "@pysos-recorder";
   }
 
   // Scenario values (environment + autopilot).
@@ -155,9 +155,9 @@ package AircraftFederation {
 
   // Transport deployment: `rpr_entity.parameters` (RprDeployment).
   attribute def BlueBaselineTransport :> ParameterSet {
-    attribute transport : String = "udp";
-    attribute bind_address : String = "127.0.0.1:5516";
-    attribute peer_address : String = "127.0.0.1:5505";
+    attribute transport : String = "unix";
+    attribute bind_address : String = "@pysos-blue-baseline";
+    attribute peer_address : String = "@pysos-recorder";
   }
 
   // Export roots. All four variants are full; each binds the same 19 model
@@ -290,7 +290,7 @@ package AircraftFederation {
     attribute scenario : String = "high_altitude_intercept";
     part launch : LaunchSpec {
       attribute mode : String = "supervised";
-      attribute readiness : String = "port_bound";
+      attribute readiness : String = "socket_bound";
       attribute timeout_s : Real = 30.0;
       attribute order : Integer = 2;
       attribute after_process : String = "supervisor";
@@ -303,7 +303,7 @@ package AircraftFederation {
     attribute scenario : String = "deep_strike_penetration";
     part launch : LaunchSpec {
       attribute mode : String = "supervised";
-      attribute readiness : String = "port_bound";
+      attribute readiness : String = "socket_bound";
       attribute timeout_s : Real = 30.0;
       attribute order : Integer = 2;
       attribute after_process : String = "supervisor";
@@ -316,7 +316,7 @@ package AircraftFederation {
     attribute scenario : String = "cas_multi_store_support";
     part launch : LaunchSpec {
       attribute mode : String = "supervised";
-      attribute readiness : String = "port_bound";
+      attribute readiness : String = "socket_bound";
       attribute timeout_s : Real = 30.0;
       attribute order : Integer = 2;
       attribute after_process : String = "supervisor";
@@ -329,7 +329,7 @@ package AircraftFederation {
     attribute scenario : String = "test_scenario";
     part launch : LaunchSpec {
       attribute mode : String = "supervised";
-      attribute readiness : String = "port_bound";
+      attribute readiness : String = "socket_bound";
       attribute timeout_s : Real = 30.0;
       attribute order : Integer = 2;
       attribute after_process : String = "supervisor";

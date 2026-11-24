@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -27,8 +28,12 @@ from prepare_instance_bundle import (
     DEFAULT_OUT_DIR,
     DEFAULT_SCENARIO,
     DEFAULT_SOURCE_SSP,
+    DEFAULT_UNIX_RECORDER_ADDRESS,
+    TRANSPORT_CHOICES,
+    default_unix_bind_address,
     instance_defaults,
     prepare_instance,
+    resolve_env_transport,
 )
 
 
@@ -47,6 +52,19 @@ def _env_scenario() -> str | None:
     return value.strip() if value and value.strip() else None
 
 
+def _instance_name_from_bind_address(address: str) -> str:
+    """Derive a stable bundle name from a unix bind address (no port needed)."""
+
+    raw = address[1:] if address.startswith("@") else Path(address).name
+    raw = raw.removesuffix(".sock")
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw).strip("-._")
+    if not cleaned:
+        raise SystemExit(
+            f"--bind-address {address!r} yields no instance name; pass --instance"
+        )
+    return cleaned if cleaned.startswith("instance-") else f"instance-{cleaned}"
+
+
 def _instance_from_bind_port(port: int) -> int:
     """Recover the 1-based index from the manifest's per-instance bind port plan."""
 
@@ -61,7 +79,12 @@ def _instance_from_bind_port(port: int) -> int:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--instance", type=int, default=None, help="1-based instance index (or derive it from PYSOS_TELEMETRY_PORT).")
+    parser.add_argument(
+        "--instance",
+        type=int,
+        default=None,
+        help="1-based instance index (required for unix; otherwise derived from PYSOS_TELEMETRY_PORT).",
+    )
     parser.add_argument("--source-ssp", type=Path, default=DEFAULT_SOURCE_SSP, help="Prepared source SSP archive.")
     parser.add_argument("--variant", default=None, help="Per-variant SSP stem under the variant directory.")
     parser.add_argument(
@@ -72,6 +95,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="Directory for instance bundles.")
     parser.add_argument("--telemetry-port", type=int, default=None, help="Per-instance RPR bind UDP port (overrides PYSOS_TELEMETRY_PORT).")
+    parser.add_argument(
+        "--transport",
+        choices=TRANSPORT_CHOICES,
+        default=None,
+        help="RPR transport: Unix datagram sockets (default) or UDP (escape hatch); defaults to PYSOS_TRANSPORT.",
+    )
+    parser.add_argument(
+        "--bind-address",
+        default=None,
+        help="RPR bind address; in unix mode '/abs/path.sock' or '@abstract-name'.",
+    )
+    parser.add_argument(
+        "--peer-address",
+        default=None,
+        help="RPR peer address; in unix mode '/abs/path.sock' or '@abstract-name'.",
+    )
     parser.add_argument("--offset-north-km", type=float, default=None, help="Shift initX_km by this many kilometres.")
     parser.add_argument("--offset-east-km", type=float, default=None, help="Shift initY_km by this many kilometres.")
     parser.add_argument("--stop-time", type=float, default=None, help="Stop time in seconds.")
@@ -95,12 +134,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    telemetry_env = _env_int("PYSOS_TELEMETRY_PORT")
+    env_transport, env_bind, env_peer = resolve_env_transport()
+    transport = args.transport if args.transport is not None else env_transport
+    unix = transport == "unix"
+    bind_address = args.bind_address
+    if bind_address is None and unix:
+        bind_address = env_bind
+    peer_address = args.peer_address
+    if peer_address is None and unix:
+        peer_address = env_peer
+    telemetry_env = None if unix else _env_int("PYSOS_TELEMETRY_PORT")
     index = args.instance
+    instance_name = None
     if index is None:
-        if telemetry_env is None:
-            raise SystemExit("--instance is required when PYSOS_TELEMETRY_PORT is unset")
-        index = _instance_from_bind_port(telemetry_env)
+        if unix:
+            if args.variant is None:
+                raise SystemExit(
+                    "--transport unix without --instance requires --variant: "
+                    "no port derives the index, and the variant owns identity"
+                )
+            bind_address = bind_address or default_unix_bind_address(args.variant, 1)
+            peer_address = peer_address or DEFAULT_UNIX_RECORDER_ADDRESS
+            instance_name = _instance_name_from_bind_address(bind_address)
+            index = 1
+        else:
+            if telemetry_env is None:
+                raise SystemExit("--instance is required when PYSOS_TELEMETRY_PORT is unset")
+            index = _instance_from_bind_port(telemetry_env)
     if args.variant is None:
         scenario = args.scenario or _env_scenario() or DEFAULT_SCENARIO
     else:
@@ -111,7 +171,13 @@ def main(argv: list[str] | None = None) -> int:
         index,
         args.source_ssp,
         args.out_dir,
-        telemetry_port=args.telemetry_port if args.telemetry_port is not None else telemetry_env,
+        telemetry_port=None
+        if unix
+        else (args.telemetry_port if args.telemetry_port is not None else telemetry_env),
+        transport=transport,
+        bind_address=bind_address,
+        peer_address=peer_address,
+        instance_name=instance_name,
         offset_north_km=args.offset_north_km,
         offset_east_km=args.offset_east_km,
         stop_time=args.stop_time,
