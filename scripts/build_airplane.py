@@ -24,7 +24,7 @@ WORKSPACE_VENV_PYTHON = REPO_ROOT.parent / "venv" / "bin" / "python3"
 AIRPLANE_VENV_PYTHON = AIRPLANE_ROOT / "venv" / "bin" / "python3"
 
 #: Imported by the airplane build CLIs; a candidate must satisfy all of them.
-BUILD_IMPORTS = ("pyssp_sysml2", "pyssp_standard", "pyssp_workflow", "pycps_sysml2")
+BUILD_IMPORTS = ("pyssp_sysml", "pyssp_standard", "pyssp_workflow", "pycps_sysml")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

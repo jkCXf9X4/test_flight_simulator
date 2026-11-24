@@ -3,7 +3,7 @@
 
 Each variant in ``sos/aircraft_federation.sysml`` is a composition root that
 inherits the shared ``AircraftModel`` graph. This script resolves that model's
-import roots, builds the variant SSP with ``pyssp_sysml2.generate_ssp``, and
+import roots, builds the variant SSP with ``pyssp_sysml.generate_ssp``, and
 checks that the archive really carries the SSD and its parameter sets before
 reporting success.
 
@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pyfmi_rpr
 import pysos_sysml
-import pyssp_sysml2
+import pyssp_sysml
 from pyssp_sysml_definitions import core_definitions
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -39,7 +39,7 @@ DEFAULT_OUTPUT_DIR = REPO_ROOT / "build" / "ssp" / "variants"
 DEFAULT_STAGE_DIR = DEFAULT_OUTPUT_DIR / ".fmu-root"
 SSD_ENTRY = "SystemStructure.ssd"
 PARAMETER_SET_PREFIX = "resources/parameter_sets/"
-#: ``pyssp_sysml2`` indexes array parameters from zero by default; the built
+#: ``pyssp_sysml`` indexes array parameters from zero by default; the built
 #: FMUs expose ``waypointX_km[1..10]``, so the export must match them.
 PARAMETER_BASE_INDEX = 1
 
@@ -162,7 +162,7 @@ def export_variant(variant: str, args: argparse.Namespace) -> Path:
     output = output_dir / f"{variant}.ssp"
     fmu_root = resolve_path(args.fmu_root) if args.fmu_root else stage_fmu_root()
 
-    pyssp_sysml2.generate_ssp(
+    pyssp_sysml.generate_ssp(
         PARTICIPANTS_MODEL,
         output,
         variant,

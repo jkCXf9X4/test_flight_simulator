@@ -10,7 +10,7 @@ IMAGE_NAME="${IMAGE_NAME:-test-flight-simulator-rerun:latest}"
 MODE="${1:---live-container}"
 
 #: Imported by the airplane build CLIs.
-BUILD_IMPORTS="pyssp_sysml2, pyssp_standard, pyssp_workflow, pycps_sysml2"
+BUILD_IMPORTS="pyssp_sysml, pyssp_standard, pyssp_workflow, pycps_sysml"
 
 fail() {
   echo "Environment check failed: $*" >&2

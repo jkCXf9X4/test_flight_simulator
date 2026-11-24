@@ -6,7 +6,7 @@ import zipfile
 from pathlib import Path
 
 import export_aircraft_variants as exporter
-import pyssp_sysml2
+import pyssp_sysml
 import pytest
 
 
@@ -53,7 +53,7 @@ def _exported_lines(text: str) -> list[str]:
 
 def test_default_variant_order(monkeypatch, tmp_path, capsys):
     calls: list[dict] = []
-    monkeypatch.setattr(pyssp_sysml2, "generate_ssp", _fake_generate(calls))
+    monkeypatch.setattr(pyssp_sysml, "generate_ssp", _fake_generate(calls))
 
     rc = exporter.main(["--output-dir", str(tmp_path), "--fmu-root", str(tmp_path)])
 
@@ -70,7 +70,7 @@ def test_default_variant_order(monkeypatch, tmp_path, capsys):
 
 def test_variant_flags_override_the_default_list(monkeypatch, tmp_path):
     calls: list[dict] = []
-    monkeypatch.setattr(pyssp_sysml2, "generate_ssp", _fake_generate(calls))
+    monkeypatch.setattr(pyssp_sysml, "generate_ssp", _fake_generate(calls))
 
     rc = exporter.main(
         [
@@ -91,7 +91,7 @@ def test_variant_flags_override_the_default_list(monkeypatch, tmp_path):
 
 def test_output_path_and_generate_arguments(monkeypatch, tmp_path):
     calls: list[dict] = []
-    monkeypatch.setattr(pyssp_sysml2, "generate_ssp", _fake_generate(calls))
+    monkeypatch.setattr(pyssp_sysml, "generate_ssp", _fake_generate(calls))
     output_dir = tmp_path / "variants"
     fmu_root = tmp_path / "fmus"
 
@@ -119,7 +119,7 @@ def test_output_path_and_generate_arguments(monkeypatch, tmp_path):
 
 def test_fmu_flags_are_forwarded(monkeypatch, tmp_path):
     calls: list[dict] = []
-    monkeypatch.setattr(pyssp_sysml2, "generate_ssp", _fake_generate(calls))
+    monkeypatch.setattr(pyssp_sysml, "generate_ssp", _fake_generate(calls))
 
     rc = exporter.main(
         [
@@ -142,7 +142,7 @@ def test_fmu_flags_are_forwarded(monkeypatch, tmp_path):
 def test_failed_generate_returns_nonzero(monkeypatch, tmp_path, capsys):
     calls: list[dict] = []
     monkeypatch.setattr(
-        pyssp_sysml2,
+        pyssp_sysml,
         "generate_ssp",
         _fake_generate(calls, fail="BlueCas"),
     )
@@ -179,7 +179,7 @@ def test_incomplete_archive_is_rejected(
 ):
     calls: list[dict] = []
     monkeypatch.setattr(
-        pyssp_sysml2,
+        pyssp_sysml,
         "generate_ssp",
         _fake_generate(
             calls,
