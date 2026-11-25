@@ -36,6 +36,7 @@ def test_entity_path_uses_documented_slug_form():
         "status/airspeed_mps",
         "status/altitude_m",
         "status/climb_rate_mps",
+        "status/climb_angle_deg",
     )
 
 

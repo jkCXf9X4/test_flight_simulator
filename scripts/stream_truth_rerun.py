@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -34,6 +35,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--radius", type=float, default=4.0, help="point radius in metres")
     parser.add_argument("--rate", type=float, default=1.0, help="playback speed (1.0 = realtime)")
     return parser.parse_args(argv)
+
+
+def climb_angle_deg(
+    previous: tuple[float, list[float]], current: tuple[float, list[float]]
+) -> float:
+    """Climb angle above the horizon from consecutive ENU fixes (z up).
+
+    Derived from position deltas rather than ``velocity_enu_mps``: the truth
+    stream's vertical velocity component is near-zero even while altitude
+    changes, so it cannot carry the climb angle.
+    """
+    (t0, before), (t1, after) = previous, current
+    dt = t1 - t0
+    if dt <= 0.0:
+        return 0.0
+    return math.degrees(
+        math.atan2(
+            (after[2] - before[2]) / dt,
+            math.hypot(after[0] - before[0], after[1] - before[1]) / dt,
+        )
+    )
 
 
 def load(path: Path) -> dict[str, list[tuple[float, list[float]]]]:
@@ -60,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     recording.connect_grpc(args.connect)
 
     tail: dict[str, list[list[float]]] = defaultdict(list)
+    last_fix: dict[str, tuple[float, list[float]]] = {}
     frames = sorted({t for rows in tracks.values() for t, _ in rows})
     started = time.monotonic()
     for t_s in frames:
@@ -73,11 +96,24 @@ def main(argv: list[str] | None = None) -> int:
             if not past:
                 continue
             colour = COLORS.get(name.split("-")[0].upper(), [200, 200, 200])
-            position = past[-1][1]
+            fix = past[-1]
+            position = fix[1]
             tail[name].append(position)
+            angle = climb_angle_deg(last_fix[name], fix) if name in last_fix else 0.0
+            last_fix[name] = fix
             recording.log(
                 f"world/{name}/pose",
-                rr.Points3D([position], colors=[colour], radii=[args.radius]),
+                rr.Points3D(
+                    [position],
+                    colors=[colour],
+                    radii=[args.radius],
+                    labels=[f"{name}  climb {angle:+.1f} deg"],
+                    show_labels=True,
+                ),
+            )
+            recording.log(
+                f"world/{name}/status/climb_angle_deg",
+                rr.Scalars(angle),
             )
             if args.tail > 0:
                 recording.log(
